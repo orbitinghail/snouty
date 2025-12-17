@@ -111,10 +111,10 @@ async fn cmd_run(webhook: String, args: Vec<String>, use_stdin: bool) -> Result<
     let params = get_params(args, use_stdin, false)?;
     params.validate_test_params()?;
 
-    // Print params to stderr for user visibility
+    // Print params to stderr for user visibility (with sensitive values redacted)
     eprintln!(
         "params: {}",
-        serde_json::to_string_pretty(params.as_map()).unwrap()
+        serde_json::to_string_pretty(&params.to_redacted_map()).unwrap()
     );
 
     let api = AntithesisApi::from_env()?;
@@ -143,10 +143,10 @@ async fn cmd_debug(args: Vec<String>, use_stdin: bool) -> Result<()> {
     let params = get_params(args, use_stdin, true)?;
     params.validate_debugging_params()?;
 
-    // Print params to stderr for user visibility
+    // Print params to stderr for user visibility (with sensitive values redacted)
     eprintln!(
         "params: {}",
-        serde_json::to_string_pretty(params.as_map()).unwrap()
+        serde_json::to_string_pretty(&params.to_redacted_map()).unwrap()
     );
 
     let api = AntithesisApi::from_env()?;

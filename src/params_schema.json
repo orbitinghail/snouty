@@ -20,31 +20,9 @@
     "integrations": {
       "type": "object",
       "description": "Define a callback url and token for a tooling integration",
-      "properties": {
-        "antithesis.integrations.github": {
-          "$ref": "#/$defs/integrationCallback"
-        },
-        "antithesis.integrations.slack": {
-          "$ref": "#/$defs/integrationCallback"
-        },
-        "antithesis.integrations.discord": {
-          "$ref": "#/$defs/integrationCallback"
-        }
-      }
-    },
-
-    "integrationCallback": {
-      "type": "object",
-      "description": "Define a callback url and token for a tooling integration",
-      "properties": {
-        "callback_url": {
-          "type": "string",
-          "format": "uri",
-          "description": "Integration callback URL"
-        },
-        "token": {
-          "type": "string",
-          "description": "Integration authentication token"
+      "patternProperties": {
+        "^antithesis\\.integrations\\.(github|slack|discord)\\.(callback_url|token)$": {
+          "type": "string"
         }
       }
     },

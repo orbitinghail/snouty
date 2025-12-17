@@ -56,6 +56,27 @@ impl Params {
     pub fn to_value(&self) -> Value {
         Value::Object(self.inner.clone())
     }
+
+    /// Get a redacted copy of the params for safe display in logs/CI.
+    /// Sensitive fields (tokens, emails) are replaced with "[REDACTED]".
+    pub fn to_redacted_map(&self) -> Map<String, Value> {
+        self.inner
+            .iter()
+            .map(|(k, v)| {
+                let redacted = is_sensitive_key(k);
+                let value = if redacted {
+                    Value::String("[REDACTED]".to_string())
+                } else {
+                    v.clone()
+                };
+                (k.clone(), value)
+            })
+            .collect()
+    }
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    key.ends_with(".token") || key == "antithesis.report.recipients"
 }
 
 fn parse_args<I, S>(args: I) -> Result<Map<String, Value>>
@@ -77,10 +98,8 @@ where
             let value = iter
                 .next()
                 .ok_or_else(|| Error::InvalidArgs(format!("missing value for --{}", key)))?;
-            let value = parse_value(value.as_ref());
 
-            // Handle nested keys like "antithesis.integrations.github"
-            insert_nested(&mut map, key, value)?;
+            map.insert(key.to_string(), Value::String(value.as_ref().to_string()));
         } else {
             return Err(Error::InvalidArgs(format!(
                 "unexpected argument: {} (expected --key)",
@@ -90,33 +109,6 @@ where
     }
 
     Ok(map)
-}
-
-fn insert_nested(map: &mut Map<String, Value>, key: &str, value: Value) -> Result<()> {
-    // Check if this is a nested integration key
-    if let Some(rest) = key.strip_prefix("antithesis.integrations.") {
-        // Parse: antithesis.integrations.{provider}.{field}
-        if let Some((provider, field)) = rest.split_once('.') {
-            let integration_key = format!("antithesis.integrations.{}", provider);
-
-            let integration = map
-                .entry(&integration_key)
-                .or_insert_with(|| Value::Object(Map::new()));
-
-            if let Value::Object(obj) = integration {
-                obj.insert(field.to_string(), value);
-            }
-            return Ok(());
-        }
-    }
-
-    // Flat key
-    map.insert(key.to_string(), value);
-    Ok(())
-}
-
-fn parse_value(s: &str) -> Value {
-    Value::String(s.to_string())
 }
 
 fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<()> {
@@ -190,12 +182,20 @@ mod tests {
         ];
         let params = Params::from_args(args).unwrap();
 
-        let github = params
-            .as_map()
-            .get("antithesis.integrations.github")
-            .unwrap();
-        assert_eq!(github["callback_url"], "https://github.com/cb");
-        assert_eq!(github["token"], "secret");
+        assert_eq!(
+            params
+                .as_map()
+                .get("antithesis.integrations.github.callback_url")
+                .unwrap(),
+            "https://github.com/cb"
+        );
+        assert_eq!(
+            params
+                .as_map()
+                .get("antithesis.integrations.github.token")
+                .unwrap(),
+            "secret"
+        );
     }
 
     #[test]
@@ -282,14 +282,39 @@ mod tests {
     }
 
     #[test]
-    fn integration_key_without_field_is_flat() {
-        // When integration key has no field (no second dot after provider),
-        // it should be treated as a flat key
-        let args = ["--antithesis.integrations.github", "some_value"];
+    fn redacted_map_hides_sensitive_values() {
+        let args = [
+            "--antithesis.duration",
+            "30",
+            "--antithesis.integrations.github.token",
+            "secret_token_123",
+            "--antithesis.integrations.github.callback_url",
+            "https://example.com/callback",
+            "--antithesis.report.recipients",
+            "user@example.com;other@example.com",
+        ];
         let params = Params::from_args(args).unwrap();
+        let redacted = params.to_redacted_map();
+
+        // Non-sensitive values should be preserved
+        assert_eq!(redacted.get("antithesis.duration").unwrap(), "30");
         assert_eq!(
-            params.as_map().get("antithesis.integrations.github").unwrap(),
-            "some_value"
+            redacted
+                .get("antithesis.integrations.github.callback_url")
+                .unwrap(),
+            "https://example.com/callback"
+        );
+
+        // Sensitive values should be redacted
+        assert_eq!(
+            redacted
+                .get("antithesis.integrations.github.token")
+                .unwrap(),
+            "[REDACTED]"
+        );
+        assert_eq!(
+            redacted.get("antithesis.report.recipients").unwrap(),
+            "[REDACTED]"
         );
     }
 }
