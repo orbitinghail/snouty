@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CLICOLOR: 1
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  skip-check:
+    runs-on: ubuntu-24.04
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+    steps:
+      - id: skip_check
+        uses: fkirc/skip-duplicate-actions@f75f66ce1886f00957d99748a42c724f4330bdcf # v5
+        with:
+          paths_ignore: '["**.md"]'
+  build:
+    runs-on: ubuntu-24.04
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    steps:
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+          persist-credentials: false
+
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+
+      - name: Install Nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C /usr/local/bin
+
+      - name: Cargo fmt
+        run: cargo fmt --check
+
+      - name: Build
+        run: cargo build
+
+      - name: Test
+        run: cargo nextest run
+
+      - name: Cargo doctests
+        run: cargo test --doc
+
+      - name: Clippy
+        uses: auguwu/clippy-action@94a9ff2f6920180b89e5c03d121d0af04a9d3e03 # 1.4.0
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+
+      - name: Spell Check Repo
+        uses: crate-ci/typos@2d0ce569feab1f8752f1dde43cc2f2aa53236e06 # v1.40.0
