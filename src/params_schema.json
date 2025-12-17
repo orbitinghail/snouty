@@ -1,0 +1,136 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Antithesis API Parameters",
+  "description": "Valid parameter shapes for Antithesis webhook API calls",
+  "oneOf": [
+    { "$ref": "#/$defs/testParams" },
+    { "$ref": "#/$defs/debuggingParams" }
+  ],
+  "$defs": {
+    "reportRecipients": {
+      "type": "object",
+      "properties": {
+        "antithesis.report.recipients": {
+          "type": "string",
+          "description": "Semicolon-delimited list of recipients to email a link to the result."
+        }
+      }
+    },
+
+    "integrations": {
+      "type": "object",
+      "description": "Define a callback url and token for a tooling integration",
+      "properties": {
+        "antithesis.integrations.github": {
+          "$ref": "#/$defs/integrationCallback"
+        },
+        "antithesis.integrations.slack": {
+          "$ref": "#/$defs/integrationCallback"
+        },
+        "antithesis.integrations.discord": {
+          "$ref": "#/$defs/integrationCallback"
+        }
+      }
+    },
+
+    "integrationCallback": {
+      "type": "object",
+      "description": "Define a callback url and token for a tooling integration",
+      "properties": {
+        "callback_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Integration callback URL"
+        },
+        "token": {
+          "type": "string",
+          "description": "Integration authentication token"
+        }
+      }
+    },
+
+    "userProperties": {
+      "type": "object",
+      "description": "Allow any user-defined properties not prefixed with antithesis",
+      "patternProperties": {
+        "^(?!antithesis\\.)": true
+      }
+    },
+
+    "testCore": {
+      "type": "object",
+      "properties": {
+        "antithesis.config_image": {
+          "type": "string",
+          "description": "Container image version for config, format: [REGISTRY/]NAME(:TAG|@DIGEST)"
+        },
+        "antithesis.description": {
+          "type": "string",
+          "description": "Test run description appearing in report headers and triggered emails"
+        },
+        "antithesis.duration": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "Desired test duration in minutes"
+        },
+        "antithesis.images": {
+          "type": "string",
+          "description": "Semicolon-delimited list of image versions, format: [REGISTRY/]NAME(:TAG|@DIGEST)"
+        },
+        "antithesis.is_ephemeral": {
+          "type": "string",
+          "enum": ["true", "false"],
+          "default": "false",
+          "description": "Whether results reflect in future reports as historic data"
+        },
+        "antithesis.source": {
+          "type": "string",
+          "description": "Identifier separating property history in reports; typically a source control descriptor"
+        }
+      }
+    },
+
+    "debuggingCore": {
+      "type": "object",
+      "properties": {
+        "antithesis.debugging.input_hash": {
+          "type": "string",
+          "description": "Input hash obtained from the copy moment button in the triage report"
+        },
+        "antithesis.debugging.session_id": {
+          "type": "string",
+          "description": "Session ID of the test run to debug, from the copy moment button in triage report"
+        },
+        "antithesis.debugging.vtime": {
+          "type": "string",
+          "description": "The vtime at which to start debugging, from the copy moment button in triage report"
+        }
+      },
+      "required": [
+        "antithesis.debugging.input_hash",
+        "antithesis.debugging.session_id",
+        "antithesis.debugging.vtime"
+      ]
+    },
+
+    "testParams": {
+      "description": "Parameters for basic_test and k8s_test webhooks",
+      "allOf": [
+        { "$ref": "#/$defs/testCore" },
+        { "$ref": "#/$defs/reportRecipients" },
+        { "$ref": "#/$defs/integrations" },
+        { "$ref": "#/$defs/userProperties" }
+      ],
+      "unevaluatedProperties": false
+    },
+
+    "debuggingParams": {
+      "description": "Parameters for debugging session webhook",
+      "allOf": [
+        { "$ref": "#/$defs/debuggingCore" },
+        { "$ref": "#/$defs/reportRecipients" }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}
