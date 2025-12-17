@@ -5,6 +5,7 @@ pub mod params;
 
 use std::io::{self, Read};
 
+use chrono::{Duration, Local};
 use clap::{Parser, Subcommand};
 use log::{debug, info};
 
@@ -23,6 +24,15 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Launch a test run
+    #[command(long_about = r#"Launch a test run
+
+Example:
+  snouty run -w basic_test \
+    --antithesis.description "nightly test run" \
+    --antithesis.config_image config:latest \
+    --antithesis.images app:latest \
+    --antithesis.duration 30 \
+    --antithesis.report.recipients "team@example.com""#)]
     Run {
         /// Webhook endpoint name (e.g., basic_test, basic_k8s_test)
         #[arg(short, long)]
@@ -32,17 +42,27 @@ enum Commands {
         #[arg(long)]
         stdin: bool,
 
-        /// Parameters as --key value pairs
+        /// Parameters as `--key value` pairs
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Launch a debugging session
+    #[command(long_about = r#"Launch a debugging session
+
+Using CLI arguments:
+  snouty debug \
+    --antithesis.debugging.session_id f89d5c11f5e3bf5e4bb3641809800cee-44-22 \
+    --antithesis.debugging.input_hash 6057726200491963783 \
+    --antithesis.debugging.vtime 329.8037810830865
+
+Using Moment.from (copy from triage report):
+  echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | snouty debug --stdin"#)]
     Debug {
         /// Read parameters from stdin (JSON or Moment.from format)
         #[arg(long)]
         stdin: bool,
 
-        /// Parameters as --key value pairs
+        /// Parameters as `--key value` pairs
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -113,7 +133,7 @@ async fn cmd_run(webhook: String, args: Vec<String>, use_stdin: bool) -> Result<
 
     // Print params to stderr for user visibility (with sensitive values redacted)
     eprintln!(
-        "params: {}",
+        "\nRequesting Antithesis test run with params:\n{}",
         serde_json::to_string_pretty(&params.to_redacted_map()).unwrap()
     );
 
@@ -126,10 +146,22 @@ async fn cmd_run(webhook: String, args: Vec<String>, use_stdin: bool) -> Result<
 
     let status = response.status();
     let body = response.text().await?;
-    debug!("response status: {}, body length: {}", status, body.len());
+    debug!("response status: {}, body:\n{}", status, body);
 
     if status.is_success() {
-        println!("{}", body);
+        // Estimate when the report email will arrive
+        let duration_mins: i64 = params
+            .as_map()
+            .get("antithesis.duration")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let eta = Local::now() + Duration::minutes(duration_mins + 10);
+        eprintln!(
+            "\nExpect a report email from Antithesis around {}",
+            eta.format("%b %-d at %-I:%M %p")
+        );
+
         Ok(())
     } else {
         Err(error::Error::Api {
@@ -145,7 +177,7 @@ async fn cmd_debug(args: Vec<String>, use_stdin: bool) -> Result<()> {
 
     // Print params to stderr for user visibility (with sensitive values redacted)
     eprintln!(
-        "params: {}",
+        "\nRequesting the Antithesis multiverse debugger with params:\n{}",
         serde_json::to_string_pretty(&params.to_redacted_map()).unwrap()
     );
 
@@ -162,6 +194,14 @@ async fn cmd_debug(args: Vec<String>, use_stdin: bool) -> Result<()> {
 
     if status.is_success() {
         println!("{}", body);
+
+        // Estimate when the debugging session email will arrive
+        let eta = Local::now() + Duration::minutes(10);
+        eprintln!(
+            "\nExpect a debugging session email from Antithesis around {}",
+            eta.format("%b %-d at %-I:%M %p")
+        );
+
         Ok(())
     } else {
         Err(error::Error::Api {

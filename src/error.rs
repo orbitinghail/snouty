@@ -20,7 +20,7 @@ pub enum Error {
     #[error("invalid arguments: {0}")]
     InvalidArgs(String),
 
-    #[error("validation failed: {}", .0.join(", "))]
+    #[error("validation failed:\n  {}", .0.join("\n  "))]
     ValidationFailed(Vec<String>),
 }
 

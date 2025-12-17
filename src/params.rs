@@ -15,7 +15,7 @@ pub struct Params {
 impl Params {
     /// Parse params from CLI arguments.
     ///
-    /// Arguments should be in the format: `--key.path value`
+    /// Arguments should be in the format: `--key value`
     pub fn from_args<I, S>(args: I) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
@@ -101,10 +101,7 @@ where
 
             map.insert(key.to_string(), Value::String(value.as_ref().to_string()));
         } else {
-            return Err(Error::InvalidArgs(format!(
-                "unexpected argument: {} (expected --key)",
-                arg
-            )));
+            return Err(Error::InvalidArgs(format!("unexpected argument: {}", arg)));
         }
     }
 

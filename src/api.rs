@@ -12,7 +12,7 @@ fn required_env(name: &'static str) -> Result<String> {
     })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     pub username: String,
     pub password: String,
