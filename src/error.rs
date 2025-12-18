@@ -11,7 +11,7 @@ pub enum Error {
         source: VarError,
     },
 
-    #[error("HTTP request failed: {0}")]
+    #[error("HTTP request failed: {0:?}")]
     Request(#[from] reqwest::Error),
 
     #[error("API error: {status} - {message}")]

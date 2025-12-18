@@ -1,6 +1,6 @@
 [package]
 name = "snouty"
-version = "0.1.0"
+version = "0.1.1-rc.1"
 edition = "2024"
 description = "A CLI tool for interacting with the Antithesis API"
 license = "Apache-2.0"
@@ -13,7 +13,7 @@ env_logger = "0.11"
 json5 = "0.4"
 jsonschema = "0.29"
 log = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "macros"] }
 serde = { version = "1", features = ["derive"] }
