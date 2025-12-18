@@ -1,6 +1,6 @@
 [package]
 name = "snouty"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "A CLI tool for interacting with the Antithesis API"
 license = "Apache-2.0"
