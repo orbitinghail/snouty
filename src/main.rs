@@ -59,7 +59,8 @@ Using CLI arguments:
     --antithesis.report.recipients "team@example.com"
 
 Using Moment.from (copy from triage report):
-  echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | snouty debug --stdin"#)]
+  echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | \
+    snouty debug --stdin --antithesis.report.recipients "team@example.com""#)]
     Debug {
         /// Read parameters from stdin (JSON or Moment.from format)
         #[arg(long)]
@@ -85,20 +86,38 @@ fn read_stdin() -> Result<String> {
 }
 
 fn get_params(args: Vec<String>, use_stdin: bool, support_moment: bool) -> Result<Params> {
-    if use_stdin {
+    // Parse stdin params if --stdin flag is set
+    let stdin_params = if use_stdin {
         let input = read_stdin()?;
         if support_moment && moment::is_moment_format(&input) {
             debug!("detected Moment.from on stdin");
-            return moment::parse(&input);
+            Some(moment::parse(&input)?)
+        } else {
+            debug!("parsing input as JSON");
+            let value: serde_json::Value = json5::from_str(&input)
+                .map_err(|e| error::Error::InvalidArgs(format!("invalid JSON: {}", e)))?;
+            Some(Params::from_json(&value)?)
         }
-        debug!("parsing input as JSON");
-        let value: serde_json::Value = json5::from_str(&input)
-            .map_err(|e| error::Error::InvalidArgs(format!("invalid JSON: {}", e)))?;
-        Params::from_json(&value)
-    } else if args.is_empty() {
-        Err(Error::InvalidArgs("no parameters provided".to_string()))
     } else {
-        Params::from_args(&args)
+        None
+    };
+
+    // Parse CLI args if provided
+    let args_params = if !args.is_empty() {
+        Some(Params::from_args(&args)?)
+    } else {
+        None
+    };
+
+    // Merge params: CLI args take priority over stdin
+    match (stdin_params, args_params) {
+        (Some(mut stdin), Some(args)) => {
+            stdin.merge(args);
+            Ok(stdin)
+        }
+        (Some(stdin), None) => Ok(stdin),
+        (None, Some(args)) => Ok(args),
+        (None, None) => Err(Error::InvalidArgs("no parameters provided".to_string())),
     }
 }
 

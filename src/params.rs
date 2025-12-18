@@ -57,6 +57,13 @@ impl Params {
         Value::Object(self.inner.clone())
     }
 
+    /// Merge another Params into this one, with the other params taking priority.
+    pub fn merge(&mut self, other: Params) {
+        for (key, value) in other.inner {
+            self.inner.insert(key, value);
+        }
+    }
+
     /// Get a redacted copy of the params for safe display in logs/CI.
     /// Sensitive fields (tokens, emails) are replaced with "[REDACTED]".
     pub fn to_redacted_map(&self) -> Map<String, Value> {
@@ -276,6 +283,40 @@ mod tests {
         let result = Params::from_args(args);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty key"));
+    }
+
+    #[test]
+    fn merge_params_overwrites_existing_keys() {
+        let mut base = Params::from_args([
+            "--antithesis.duration",
+            "30",
+            "--antithesis.description",
+            "base description",
+        ])
+        .unwrap();
+
+        let overlay = Params::from_args([
+            "--antithesis.duration",
+            "60",
+            "--antithesis.report.recipients",
+            "team@example.com",
+        ])
+        .unwrap();
+
+        base.merge(overlay);
+
+        // Overlay value should overwrite base value
+        assert_eq!(base.as_map().get("antithesis.duration").unwrap(), "60");
+        // Base-only value should be preserved
+        assert_eq!(
+            base.as_map().get("antithesis.description").unwrap(),
+            "base description"
+        );
+        // Overlay-only value should be added
+        assert_eq!(
+            base.as_map().get("antithesis.report.recipients").unwrap(),
+            "team@example.com"
+        );
     }
 
     #[test]

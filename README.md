@@ -84,8 +84,9 @@ snouty debug \
   --antithesis.report.recipients "team@example.com"
 ```
 
-Using `Moment.from` (copy directly from a triage report):
+Snouty can handle passing in a `Moment.from` via stdin:
 
 ```sh
-echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | snouty debug --stdin
+echo 'Moment.from({ session_id: "...", input_hash: "...", vtime: ... })' | \
+  snouty debug --stdin --antithesis.report.recipients "team@example.com"
 ```

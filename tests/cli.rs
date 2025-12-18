@@ -397,3 +397,87 @@ fn debug_reports_api_errors() {
         .failure()
         .stderr(predicate::str::contains("API error: 401"));
 }
+
+// === Tests for merging stdin and CLI args ===
+
+#[test]
+fn run_merges_stdin_json_with_cli_args() {
+    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--stdin",
+            "--antithesis.report.recipients",
+            "team@example.com",
+        ])
+        .write_stdin(r#"{"antithesis.duration": "60", "antithesis.description": "from stdin"}"#)
+        .assert()
+        .success()
+        // Values from stdin should be present
+        .stderr(predicate::str::contains(r#""antithesis.duration": "60""#))
+        .stderr(predicate::str::contains(
+            r#""antithesis.description": "from stdin""#,
+        ))
+        // CLI arg should be merged in
+        .stderr(predicate::str::contains(
+            r#""antithesis.report.recipients": "[REDACTED]""#,
+        ));
+}
+
+#[test]
+fn run_cli_args_override_stdin_json() {
+    let mock_url = start_mock_server(r#"{"ok": true}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "run",
+            "-w",
+            "basic_test",
+            "--stdin",
+            "--antithesis.duration",
+            "120",
+        ])
+        .write_stdin(r#"{"antithesis.duration": "60", "antithesis.description": "from stdin"}"#)
+        .assert()
+        .success()
+        // CLI arg should override stdin value
+        .stderr(predicate::str::contains(r#""antithesis.duration": "120""#))
+        // Stdin-only value should still be present
+        .stderr(predicate::str::contains(
+            r#""antithesis.description": "from stdin""#,
+        ));
+}
+
+#[test]
+fn debug_merges_moment_with_cli_args() {
+    let mock_url = start_mock_server(r#"{"debugging": true}"#, 200);
+    let moment_input = r#"Moment.from({ session_id: "f89d5c11f5e3bf5e4bb3641809800cee-44-22", input_hash: "6057726200491963783", vtime: 329.8037810830865 })"#;
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "debug",
+            "--stdin",
+            "--antithesis.report.recipients",
+            "team@example.com",
+        ])
+        .write_stdin(moment_input)
+        .assert()
+        .success()
+        // Moment params should be present
+        .stderr(predicate::str::contains(
+            r#""antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.debugging.input_hash": "6057726200491963783""#,
+        ))
+        .stderr(predicate::str::contains(
+            r#""antithesis.debugging.vtime": "329.8037810830865""#,
+        ))
+        // CLI arg should be merged in
+        .stderr(predicate::str::contains(
+            r#""antithesis.report.recipients": "[REDACTED]""#,
+        ));
+}
