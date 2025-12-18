@@ -58,7 +58,7 @@ fn version_prints_version() {
         .arg("version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("snouty 0.1.0"));
+        .stdout(predicate::str::is_match(r"^snouty \d+\.\d+\.\d+").unwrap());
 }
 
 #[test]
