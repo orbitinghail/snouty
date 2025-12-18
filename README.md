@@ -2,7 +2,8 @@
 
 A unofficial CLI for the [Antithesis](https://antithesis.com) API. See the [webhook documentation](https://antithesis.com/docs/webhook/) for details on available endpoints and parameters.
 
-> [!NOTE] This CLI is unofficial and unsupported by Antithesis. It's released open-source for the benefit of Antithesis users. If you encounter problems with the CLI please file issues here. If you encounter issues with the Antithesis API then please reach out to support.
+> [!NOTE]
+> This CLI is unofficial and unsupported by Antithesis. It's released open-source for the benefit of Antithesis users. If you encounter problems with the CLI please file issues here. If you encounter issues with the Antithesis API then please reach out to support.
 
 ## Install snouty
 
