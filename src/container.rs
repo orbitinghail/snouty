@@ -1026,7 +1026,8 @@ impl std::str::FromStr for RegistryPrefix {
             Some(host) => (host, &value[host.len() + 1..]),
             // A bare `host:port` names a registry, but a bare `name:tag` names
             // an image. The colon is a port only when digits follow it.
-            None if is_registry_host(value)
+            None if !value.contains('/')
+                && is_registry_host(value)
                 && !value.contains('@')
                 && value.rsplit_once(':').is_none_or(|(_, port)| {
                     !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
@@ -1409,6 +1410,8 @@ mod tests {
             "registry.corp.example:8443"
         );
         assert_eq!(parse("ghcr.io / "), "ghcr.io");
+        // A dot or colon after the slash marks no host.
+        assert_eq!(parse("acme/my.app"), "docker.io/acme/my.app");
         assert_eq!(parse("acme"), "docker.io/acme");
         assert_eq!(parse("docker.io/acme"), "docker.io/acme");
         assert_eq!(parse("index.docker.io/acme"), "docker.io/acme");
@@ -1425,6 +1428,7 @@ mod tests {
             ("ghcr.io/acme/app@sha256:abc", "tag or digest"),
             ("ghcr.io@sha256", "tag or digest"),
             ("app:v1", "tag or digest"),
+            ("acme/app:8080", "tag or digest"),
             ("ghcr.io:latest", "tag or digest"),
         ] {
             let err = text.parse::<RegistryPrefix>().unwrap_err().to_string();
