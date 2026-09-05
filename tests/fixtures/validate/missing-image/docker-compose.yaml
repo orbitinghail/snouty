@@ -1,5 +1,5 @@
-# References an image that does not exist in the local image store. snouty
-# never pulls (it tests exactly what is present locally), so validation stops
+# References an image that does not exist in the local image store. `snouty
+# validate` never pulls (it tests exactly what is present locally), so validation stops
 # before starting anything and tells you which image is missing.
 services:
   app:

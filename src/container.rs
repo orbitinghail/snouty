@@ -22,8 +22,7 @@ use crate::settings::Settings;
 /// only exists to convert an indefinite hang into a clear error.
 pub const DISCOVERY_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The platform a test run executes. The config image is built for it, and a
-/// private image is pulled for it.
+/// The platform a test run executes.
 pub const AMD64_PLATFORM: &str = "linux/amd64";
 
 /// A container image's CPU architecture, as reported by the runtime.
@@ -789,11 +788,10 @@ pub enum RemoteManifest {
     Single,
 }
 
-/// Podman's spelling for a plain-HTTP registry; docker's is `--insecure`.
 const PODMAN_INSECURE_FLAG: &str = "--tls-verify=false";
 
-/// Whether `image_ref` names a local registry, which a test harness serves
-/// over plain HTTP.
+/// Whether `image_ref` names a local registry. The test harness serves its
+/// registry over plain HTTP.
 fn is_plain_http_registry(image_ref: &str) -> bool {
     image_ref.starts_with("localhost") || image_ref.starts_with("127.0.0.1")
 }
@@ -814,8 +812,9 @@ fn remote_manifest_via_cli(runtime: &str, insecure_flag: &str, image_ref: &str) 
 }
 
 /// Run `{runtime} pull` for [`AMD64_PLATFORM`]. `insecure_flag` is the
-/// runtime's spelling for plain-HTTP registries, applied only to local
-/// registries; docker has none, because it configures those on the daemon.
+/// runtime's flag for a plain-HTTP registry, and it is applied only to a
+/// local registry. Docker has no such flag: the daemon configures insecure
+/// registries.
 fn pull_via_cli(runtime: &str, insecure_flag: Option<&str>, image_ref: &str) -> Result<()> {
     let mut args = vec!["pull", "--platform", AMD64_PLATFORM];
     if let Some(flag) = insecure_flag
@@ -985,8 +984,8 @@ pub fn normalize_repo(repo: &str) -> String {
     }
 }
 
-/// Docker Hub under one spelling: a runtime reads `index.docker.io` as
-/// `docker.io`, so repository names compare by the latter.
+/// A runtime reads `index.docker.io` as `docker.io`, so repository names
+/// compare by `docker.io`.
 fn canonical_host(host: &str) -> &str {
     if host == "index.docker.io" {
         "docker.io"
@@ -996,7 +995,7 @@ fn canonical_host(host: &str) -> &str {
 }
 
 /// A registry, or a repository path below one, that a test run cannot pull
-/// from: the `private_registries` setting lists them. snouty pulls such an
+/// from. The `private_registries` setting lists them. snouty pulls such an
 /// image with this machine's credentials and copies the bytes into the tenant
 /// repository, so a pin never names the private address.
 ///
@@ -1025,8 +1024,8 @@ impl std::str::FromStr for RegistryPrefix {
         }
         let (host, path) = match registry_host(value) {
             Some(host) => (host, &value[host.len() + 1..]),
-            // A bare `host:port` names a registry, while a bare `name:tag`
-            // names an image: the colon is a port only when digits follow it.
+            // A bare `host:port` names a registry, but a bare `name:tag` names
+            // an image. The colon is a port only when digits follow it.
             None if is_registry_host(value)
                 && !value.contains('@')
                 && value.rsplit_once(':').is_none_or(|(_, port)| {
@@ -1067,7 +1066,6 @@ impl RegistryPrefix {
     }
 }
 
-/// Whether any prefix in `private_registries` serves `image`.
 pub fn is_private_image(image: &str, private_registries: &[RegistryPrefix]) -> bool {
     private_registries
         .iter()
@@ -1168,9 +1166,8 @@ mod tests {
         assert_eq!(once, twice);
     }
 
-    /// A prefix reads the same way twice: parsing the spelling a prefix
-    /// prints returns that prefix. Run over arbitrary text so every rejected
-    /// spelling is exercised too.
+    /// Arbitrary text also reaches every rejected spelling, which must not
+    /// panic.
     #[hegel::test]
     fn registry_prefix_parse_is_idempotent(tc: hegel::TestCase) {
         let text = tc.draw(generators::text());
@@ -1181,8 +1178,6 @@ mod tests {
         assert_eq!(once, twice);
     }
 
-    /// Every image whose path continues below a prefix matches it, whatever
-    /// the path segment and tag spell.
     #[hegel::test]
     fn registry_prefix_matches_every_image_below_it(tc: hegel::TestCase) {
         let Ok(prefix) = tc.draw(generators::text()).parse::<RegistryPrefix>() else {
@@ -1414,7 +1409,6 @@ mod tests {
             "registry.corp.example:8443"
         );
         assert_eq!(parse("ghcr.io / "), "ghcr.io");
-        // A name with no host is a Docker Hub namespace, spelled one way.
         assert_eq!(parse("acme"), "docker.io/acme");
         assert_eq!(parse("docker.io/acme"), "docker.io/acme");
         assert_eq!(parse("index.docker.io/acme"), "docker.io/acme");
@@ -1444,17 +1438,14 @@ mod tests {
         assert!(acme.matches("ghcr.io/acme/app:v1"));
         assert!(acme.matches("ghcr.io/acme/team/app@sha256:abc"));
         assert!(acme.matches("ghcr.io/acme"));
-        // A sibling namespace shares the spelling up to the slash only.
         assert!(!acme.matches("ghcr.io/acmeco/app:v1"));
         assert!(!acme.matches("docker.io/acme/app:v1"));
 
-        // A whole registry.
         let ghcr: RegistryPrefix = "ghcr.io".parse().unwrap();
         assert!(ghcr.matches("ghcr.io/anyone/app:v1"));
         assert!(!ghcr.matches("quay.io/anyone/app:v1"));
         assert!(!ghcr.matches("app:v1"));
 
-        // Docker Hub shorthand on either side.
         let hub: RegistryPrefix = "acme".parse().unwrap();
         assert!(hub.matches("acme/app:v1"));
         assert!(hub.matches("index.docker.io/acme/app:v1"));

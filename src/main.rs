@@ -263,10 +263,10 @@ async fn cmd_launch(
         container::warn_ambiguous_engine(settings, rt.as_ref(), json);
 
         // For compose configs, every service image is pinned to its local
-        // digest (snouty pulls only a missing image that a private registry
-        // serves): served from a registry confirmed to already have it, or
-        // pushed to the Antithesis registry. The compose
-        // file is then canonicalized, digest-pinned, and baked into the
+        // digest (snouty pulls only a missing image below a `private_registries`
+        // prefix): served from a registry confirmed to already have it, or
+        // pushed to the Antithesis registry. The compose file is then
+        // canonicalized, digest-pinned, and baked into the
         // config image, so the platform runs exactly what was resolved here.
         // k8s configs reference images by name in the manifests and the
         // platform pulls them itself.

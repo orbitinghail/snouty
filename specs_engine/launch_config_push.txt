@@ -2,8 +2,8 @@
 #
 # When --config is used with a docker-compose config, the local image store is
 # the single source of truth: snouty pulls only an image below a
-# `private_registries` prefix (launch_config_private.txt). Every service image must be
-# present locally and is pinned to its local digest — served from a registry
+# `private_registries` prefix (launch_config_private.txt). Every service image
+# must be present locally and is pinned to its local digest — served from a registry
 # that verifiably already has that digest (a manifest-only round trip, no
 # pull/push), or tagged with the ANTITHESIS_REPOSITORY prefix and pushed. The
 # compose file is then canonicalized and rewritten with digest-pinned image

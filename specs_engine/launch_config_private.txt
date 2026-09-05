@@ -23,7 +23,7 @@ stderr 'Pushing image: .*/private-src/app-private:v1'
 remove-image ${REGISTRY}/private-src/app-private:v1
 
 # Without the setting, a missing image at another address fails before any
-# push: snouty pulls nothing it was not told to.
+# push. snouty does not pull it.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 set-env ANTITHESIS_REPOSITORY ${REGISTRY}/tenant
 substitute private_config/docker-compose.yaml

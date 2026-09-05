@@ -89,8 +89,8 @@ fn cmd_remove_image(
     args: &[String],
 ) -> testscript_rs::Result<()> {
     // Usage: remove-image <name:tag>
-    // Drops one tag from the engine's local store, so a later command sees
-    // the image as absent. Interpolates ${VAR} references in the tag.
+    // Removes one tag from the engine's local store. Interpolates ${VAR}
+    // references in the tag.
     let [image_ref] = args else {
         return Err(err("remove-image requires <name:tag>".to_string()));
     };

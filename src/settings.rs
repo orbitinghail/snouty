@@ -201,9 +201,7 @@ impl Settings {
         .map(|value| parse_boolean("api_cache_respect_headers", &value))
         .transpose()?;
 
-        // A typed list: the registries a test run cannot pull from. The file
-        // layers accept a TOML array; the environment variable and a quoted
-        // string separate the entries with commas.
+        // A typed list: the registries a test run cannot pull from.
         let private_registries = resolve_list_value(
             "private_registries",
             PRIVATE_REGISTRIES_VAR_NAME,
@@ -634,9 +632,9 @@ fn resolve_boolean_value(
 }
 
 /// [`resolve_value`] for a list setting: the file layers accept a TOML array
-/// of strings as well as a quoted string. The value comes back as one text
-/// with the entries separated by commas — the form an environment variable
-/// takes — and the caller owns the split and the parse.
+/// of strings as well as a quoted string. The value comes back as one
+/// comma-separated text, the form an environment variable takes. The caller
+/// splits and parses it (see [`parse_registry_prefixes`]).
 fn resolve_list_value(
     key: &str,
     env_var: &str,

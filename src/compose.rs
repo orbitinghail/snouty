@@ -497,11 +497,10 @@ impl DockerCompose {
     /// with those pins (`name:tag@sha256:...`).
     ///
     /// The local image store is the single source of truth for what a launch
-    /// runs. Every service must resolve to an image that is present locally
-    /// (built via its `build:` stanza, built or loaded out of band, or
-    /// previously pulled); the one exception is an image below a prefix in
-    /// `private_registries`, which snouty pulls when the store lacks it
-    /// ([`pull_private_images`]). Each image is then pinned to its local
+    /// runs. Every service must resolve to an image that is present locally.
+    /// The one exception is an image below a prefix in `private_registries`:
+    /// snouty pulls it when the store lacks it ([`pull_private_images`]).
+    /// Each image is then pinned to its local
     /// digest in a registry confirmed to serve it ([`find_remote_pin`]),
     /// or — when no registry has it — tagged into `registry` and pushed, so
     /// the platform always pulls exactly what was resolved here.
@@ -615,10 +614,9 @@ fn push_destination(image: &str, prefix: &str) -> Result<String> {
 }
 
 /// Pull each service image that lies below a prefix in `private_registries`
-/// and is absent from the local store. An image already present is never
-/// pulled again, so the local store stays the source of truth for what runs.
-/// A service with a `build:` stanza produces its own image, so it is never
-/// pulled either: compose builds such an image, it does not pull it.
+/// and is absent from the local store. An image that is present is not
+/// pulled, so the local store stays the source of truth for what runs. A
+/// service with a `build:` stanza produces its own image, so it is skipped.
 fn pull_private_images(
     rt: &dyn ContainerRuntime,
     contents: &ComposeContents,
@@ -671,9 +669,9 @@ fn find_remote_pin(
     // is spelled so that it survives the strip. A repository at the
     // registry's own address never survives it either, because the strip
     // matches `prefix` whole — and that address is the one a test run cannot
-    // resolve, so those bytes go to the push path. So does a private
-    // registry's: this machine's credentials confirm the manifest, but a test
-    // run has none.
+    // resolve, so those bytes go to the push path. A private registry's
+    // bytes go there too: this machine's credentials confirm the manifest,
+    // but a test run has none.
     let at_registry_address =
         registry_host(prefix).is_some_and(|address| registry_host(image) == Some(address));
     if !at_registry_address && !is_private_image(image, private_registries) {
@@ -864,9 +862,8 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
     })
 }
 /// Ensure the referenced images are available in the local image store.
-/// What runs (validate) and what gets pushed (launch) is exactly what's in
-/// the local store; the one pull snouty makes, [`pull_private_images`], runs
-/// before this check.
+/// What runs (validate) and what gets pushed (launch) is exactly what is in
+/// the local store. This check never pulls.
 ///
 /// The error is intentionally context-free: it explains only why local presence
 /// is required. Command-specific escape hatches (e.g. launch's `--config-image`,
@@ -1502,8 +1499,7 @@ services:
         );
     }
     /// Run pin_images over `yaml` with a [`FakeRuntime`] (real docker-compose
-    /// binary for config resolution, fake image/registry operations). The
-    /// fake carries the run's `private_registries`.
+    /// binary for config resolution, fake image/registry operations).
     fn pin_with_fake(rt: &FakeRuntime, yaml: &str, registry: &str) -> Result<String> {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("docker-compose.yaml"), yaml).unwrap();
@@ -1563,9 +1559,6 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // The store lacks the image, and the platform cannot pull from the
-        // private registry: snouty pulls it here and copies it below the
-        // mirror path, so the pin names bytes the tenant repository serves.
         let dest = "reg.example.com/snouty-mirror/ghcr.io/acme/app:v1";
         let rt = FakeRuntime {
             architectures: BTreeMap::from([(dest.to_string(), "amd64".to_string())]),
@@ -1591,8 +1584,6 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // The service builds its own image, so a missing one means the build
-        // has not run: the build hint applies, and nothing is pulled.
         let rt = FakeRuntime {
             private_registries: vec!["ghcr.io/acme".parse().unwrap()],
             ..Default::default()
@@ -1618,9 +1609,6 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // The registry confirms the digest with this machine's credentials,
-        // which a test run does not have. Outside the private list the pin
-        // names the registry; inside it, the image is copied.
         let dest = "reg.example.com/snouty-mirror/ghcr.io/acme/app:v1";
         let rt = FakeRuntime {
             available_images: BTreeMap::from([("ghcr.io/acme/app:v1".to_string(), true)]),
@@ -2138,7 +2126,8 @@ services:
             );
 
             // Case 3 — not present locally: hard error before anything is
-            // pushed. snouty pulls nothing here, even for registry-qualified refs.
+            // pushed. With no private registries, snouty pulls nothing, even for
+            // a registry-qualified ref.
             let err = pinned_app("services:\n  app:\n    image: snouty-bare-local-xyz:latest\n")
                 .expect_err(&format!("{}: expected pin_images to fail", rt.name()));
             let debug = format!("{err:?}");
