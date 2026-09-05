@@ -617,6 +617,8 @@ fn push_destination(image: &str, prefix: &str) -> Result<String> {
 /// Pull each service image that lies below a prefix in `private_registries`
 /// and is absent from the local store. An image already present is never
 /// pulled again, so the local store stays the source of truth for what runs.
+/// A service with a `build:` stanza produces its own image, so it is never
+/// pulled either: compose builds such an image, it does not pull it.
 fn pull_private_images(
     rt: &dyn ContainerRuntime,
     contents: &ComposeContents,
@@ -624,11 +626,18 @@ fn pull_private_images(
 ) -> Result<()> {
     for service in &contents.services {
         let image = service.image.as_str();
-        if !is_private_image(image, private_registries) || rt.image_exists(image)? {
+        if contents.build_services.contains(&service.name)
+            || !is_private_image(image, private_registries)
+            || rt.image_exists(image)?
+        {
             continue;
         }
         eprintln!("Pulling image: {image}");
-        rt.image_pull(image)?;
+        rt.image_pull(image)
+            .wrap_err_with(|| {
+                format!("failed to pull `{image}`, which `private_registries` covers")
+            })
+            .suggestion("log in to the registry, or pull the image yourself, then retry")?;
     }
     Ok(())
 }
@@ -855,8 +864,9 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
     })
 }
 /// Ensure the referenced images are available in the local image store.
-/// snouty never pulls — what runs (validate) and what gets pushed (launch)
-/// is exactly what's in the local store.
+/// What runs (validate) and what gets pushed (launch) is exactly what's in
+/// the local store; the one pull snouty makes, [`pull_private_images`], runs
+/// before this check.
 ///
 /// The error is intentionally context-free: it explains only why local presence
 /// is required. Command-specific escape hatches (e.g. launch's `--config-image`,
@@ -904,8 +914,10 @@ pub fn validate_images_are_available(
         err = err.with_note(|| note);
     }
     err = err.with_note(|| {
-        "snouty never pulls — what it validates and launches is exactly what's in your \
-         local image store, so every referenced image must already be present there"
+        "snouty does not pull an image on its own — what it validates and launches is \
+         exactly what's in your local image store, so every referenced image must already \
+         be present there. `snouty launch` pulls an image only when the `private_registries` \
+         setting lists its registry"
     });
 
     // A missing image is often just sitting in the *other* installed engine's
@@ -1574,6 +1586,33 @@ services:
         );
     }
     #[test]
+    fn pin_images_never_pulls_a_build_service_image() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // The service builds its own image, so a missing one means the build
+        // has not run: the build hint applies, and nothing is pulled.
+        let rt = FakeRuntime {
+            private_registries: vec!["ghcr.io/acme".parse().unwrap()],
+            ..Default::default()
+        };
+        let err = pin_with_fake(
+            &rt,
+            "services:\n  app:\n    build: .\n    image: ghcr.io/acme/app:v1\n",
+            "reg.example.com",
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:?}").contains("build it first"),
+            "unexpected error: {err:?}"
+        );
+        assert!(
+            rt.pulled.lock().unwrap().is_empty(),
+            "nothing should be pulled"
+        );
+    }
+    #[test]
     fn pin_images_copies_a_private_image_even_when_its_registry_serves_it() {
         if !has_compose() {
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
@@ -2099,7 +2138,7 @@ services:
             );
 
             // Case 3 — not present locally: hard error before anything is
-            // pushed. snouty never pulls, even for registry-qualified refs.
+            // pushed. snouty pulls nothing here, even for registry-qualified refs.
             let err = pinned_app("services:\n  app:\n    image: snouty-bare-local-xyz:latest\n")
                 .expect_err(&format!("{}: expected pin_images to fail", rt.name()));
             let debug = format!("{err:?}");
@@ -2307,7 +2346,7 @@ services:
             "expected build-stanza hint on the second missing image, got: {debug}"
         );
         assert!(
-            debug.contains("snouty never pulls"),
+            debug.contains("snouty does not pull an image on its own"),
             "expected the why-it's-required-locally note, got: {debug}"
         );
         // The shared check is context-free: the launch-only `--config-image`

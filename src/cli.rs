@@ -529,7 +529,7 @@ pub struct LaunchArgs {
 
     /// Local config dir (docker-compose.yaml or a manifests/ subdir), auto-built
     /// and pushed as the config image. Compose service images must already exist
-    /// locally — snouty never pulls.
+    /// locally, unless the `private_registries` setting lists their registry.
     #[arg(short, long, conflicts_with = "config_image")]
     pub config: Option<std::path::PathBuf>,
 

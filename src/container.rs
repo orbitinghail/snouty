@@ -1011,7 +1011,9 @@ impl std::str::FromStr for RegistryPrefix {
     type Err = color_eyre::Report;
 
     fn from_str(value: &str) -> Result<Self> {
-        let value = value.trim().trim_end_matches('/');
+        let value = value
+            .trim()
+            .trim_end_matches(|c: char| c == '/' || c.is_whitespace());
         if value.is_empty() {
             return Err(user_error("a registry prefix must not be empty"));
         }
@@ -1021,17 +1023,26 @@ impl std::str::FromStr for RegistryPrefix {
                  only, such as `ghcr.io/acme`"
             )));
         }
-        if image_repo(value) != value {
+        let (host, path) = match registry_host(value) {
+            Some(host) => (host, &value[host.len() + 1..]),
+            // A bare `host:port` names a registry, while a bare `name:tag`
+            // names an image: the colon is a port only when digits follow it.
+            None if is_registry_host(value)
+                && !value.contains('@')
+                && value.rsplit_once(':').is_none_or(|(_, port)| {
+                    !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+                }) =>
+            {
+                (value, "")
+            }
+            None => ("docker.io", value),
+        };
+        if value.contains('@') || image_repo(path) != path {
             return Err(user_error(format!(
                 "registry prefix `{value}` names a tag or digest; write the registry or \
                  repository path only, such as `ghcr.io/acme`"
             )));
         }
-        let (host, path) = match registry_host(value) {
-            Some(host) => (host, &value[host.len() + 1..]),
-            None if is_registry_host(value) => (value, ""),
-            None => ("docker.io", value),
-        };
         let host = canonical_host(host);
         Ok(Self(if path.is_empty() {
             host.to_string()
@@ -1397,6 +1408,12 @@ mod tests {
         assert_eq!(parse("ghcr.io"), "ghcr.io");
         assert_eq!(parse("ghcr.io/acme/"), "ghcr.io/acme");
         assert_eq!(parse(" localhost:5000/team "), "localhost:5000/team");
+        assert_eq!(parse("localhost:5000"), "localhost:5000");
+        assert_eq!(
+            parse("registry.corp.example:8443"),
+            "registry.corp.example:8443"
+        );
+        assert_eq!(parse("ghcr.io / "), "ghcr.io");
         // A name with no host is a Docker Hub namespace, spelled one way.
         assert_eq!(parse("acme"), "docker.io/acme");
         assert_eq!(parse("docker.io/acme"), "docker.io/acme");
@@ -1412,6 +1429,9 @@ mod tests {
             ("https://ghcr.io/acme", "URL scheme"),
             ("ghcr.io/acme/app:v1", "tag or digest"),
             ("ghcr.io/acme/app@sha256:abc", "tag or digest"),
+            ("ghcr.io@sha256", "tag or digest"),
+            ("app:v1", "tag or digest"),
+            ("ghcr.io:latest", "tag or digest"),
         ] {
             let err = text.parse::<RegistryPrefix>().unwrap_err().to_string();
             assert!(err.contains(needle), "`{text}`: {err}");

@@ -1,7 +1,8 @@
 # snouty launch --config — image push and digest pinning
 #
 # When --config is used with a docker-compose config, the local image store is
-# the single source of truth: snouty never pulls. Every service image must be
+# the single source of truth: snouty pulls only an image below a
+# `private_registries` prefix (launch_config_private.txt). Every service image must be
 # present locally and is pinned to its local digest — served from a registry
 # that verifiably already has that digest (a manifest-only round trip, no
 # pull/push), or tagged with the ANTITHESIS_REPOSITORY prefix and pushed. The
@@ -34,7 +35,8 @@ stderr '"antithesis.config_image":.*@sha256:'
 [docker] stderr '"antithesis.config_image":.*@sha256:'
 
 # A registry-qualified third-party image that is NOT in the local store fails
-# fast — snouty never pulls, so the user must pull it themselves first.
+# fast — snouty pulls only from `private_registries`, so the user must pull it
+# themselves first.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 ! snouty launch -w basic_test -c external_config --duration 30
 stderr '.*some images are not available locally.*'

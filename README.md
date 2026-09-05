@@ -136,7 +136,7 @@ A matching environment variable always overrides the file. The supported keys an
 | `api_cache_respect_headers` | `SNOUTY_API_CACHE_RESPECT_HEADERS`| Set `false` to ignore server caching directives.                                 |
 | `private_registries`        | `SNOUTY_PRIVATE_REGISTRIES`       | Registries a test run cannot pull from. See below.                               |
 
-`private_registries` lists registries, or repository paths below a registry, that need this machine's credentials. `snouty launch --config` pulls a compose service image below a listed prefix when the local image store lacks it, and always copies the image into your repository, so the test run never pulls from the private registry. In a settings file the value is a TOML array; in the environment variable, separate the entries with commas.
+`private_registries` lists registries, or repository paths below a registry, that need this machine's credentials. `snouty launch --config` pulls a compose service image below a listed prefix when the local image store lacks it, and always copies the image into your repository, so the test run never pulls from the private registry. An image at a private registry that is not listed keeps its own address in the pin, and the test run fails to pull it. `snouty validate` does not pull. In a settings file the value is a TOML array; in the environment variable, separate the entries with commas.
 
 ```toml
 private_registries = ["ghcr.io/your-org", "123456789012.dkr.ecr.us-east-1.amazonaws.com"]
