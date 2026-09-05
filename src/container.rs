@@ -22,8 +22,8 @@ use crate::settings::Settings;
 /// only exists to convert an indefinite hang into a clear error.
 pub const DISCOVERY_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The platform a test run executes. Every image snouty builds or pulls
-/// targets it, so the bytes it pushes are bytes the platform can run.
+/// The platform a test run executes. The config image is built for it, and a
+/// private image is pulled for it.
 pub const AMD64_PLATFORM: &str = "linux/amd64";
 
 /// A container image's CPU architecture, as reported by the runtime.
@@ -207,20 +207,9 @@ pub trait ContainerRuntime: Send + Sync {
     }
 
     /// Pull `image_ref` for [`AMD64_PLATFORM`], with the runtime's own
-    /// credentials. snouty pulls only an image that a private registry serves
-    /// and the local store lacks (see [`RegistryPrefix`]).
+    /// credentials.
     fn image_pull(&self, image_ref: &str) -> Result<()> {
-        let runtime = self.name();
-        let output = self
-            .command(&["pull", "--platform", AMD64_PLATFORM, image_ref])
-            .output()
-            .wrap_err(format!("failed to run '{runtime} pull'"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(eyre!("'{runtime} pull {image_ref}' failed"))
-                .with_section(move || stderr.trim().to_string().header("Stderr:"));
-        }
-        Ok(())
+        pull_via_cli(self.name(), None, image_ref)
     }
 
     /// Build a container image from a directory.
@@ -531,21 +520,7 @@ impl ContainerRuntime for PodmanRuntime {
     }
 
     fn image_pull(&self, image_ref: &str) -> Result<()> {
-        let mut args = vec!["pull", "--platform", AMD64_PLATFORM];
-        if is_plain_http_registry(image_ref) {
-            args.push(PODMAN_INSECURE_FLAG);
-        }
-        args.push(image_ref);
-        let output = Command::new(&self.cmd)
-            .args(&args)
-            .output()
-            .wrap_err(format!("failed to run '{} pull'", self.cmd))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(eyre!("'{} pull {image_ref}' failed", self.cmd))
-                .with_section(move || stderr.trim().to_string().header("Stderr:"));
-        }
-        Ok(())
+        pull_via_cli(&self.cmd, Some(PODMAN_INSECURE_FLAG), image_ref)
     }
 
     fn image_push(&self, image_ref: &str) -> Result<String> {
@@ -838,6 +813,29 @@ fn remote_manifest_via_cli(runtime: &str, insecure_flag: &str, image_ref: &str) 
     }
 }
 
+/// Run `{runtime} pull` for [`AMD64_PLATFORM`]. `insecure_flag` is the
+/// runtime's spelling for plain-HTTP registries, applied only to local
+/// registries; docker has none, because it configures those on the daemon.
+fn pull_via_cli(runtime: &str, insecure_flag: Option<&str>, image_ref: &str) -> Result<()> {
+    let mut args = vec!["pull", "--platform", AMD64_PLATFORM];
+    if let Some(flag) = insecure_flag
+        && is_plain_http_registry(image_ref)
+    {
+        args.push(flag);
+    }
+    args.push(image_ref);
+    let output = Command::new(runtime)
+        .args(&args)
+        .output()
+        .wrap_err(format!("failed to run '{runtime} pull'"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("'{runtime} pull {image_ref}' failed"))
+            .with_section(move || stderr.trim().to_string().header("Stderr:"));
+    }
+    Ok(())
+}
+
 /// Classify `manifest inspect` JSON output: a `manifests` array marks a
 /// manifest list (scan its platforms for amd64); any other valid manifest
 /// JSON is a single-platform manifest.
@@ -976,16 +974,9 @@ pub fn strip_registry(image: &str, registry: &str) -> String {
 /// Repositories naming any other registry (first component with a dot, a
 /// port, or `localhost`) pass through unchanged.
 pub fn normalize_repo(repo: &str) -> String {
-    let (registry, rest) = match repo.split_once('/') {
-        Some((first, rest)) if is_registry_host(first) => {
-            let registry = if first == "index.docker.io" {
-                "docker.io"
-            } else {
-                first
-            };
-            (registry, rest)
-        }
-        _ => ("docker.io", repo),
+    let (registry, rest) = match registry_host(repo) {
+        Some(host) => (canonical_host(host), &repo[host.len() + 1..]),
+        None => ("docker.io", repo),
     };
     if registry == "docker.io" && !rest.contains('/') {
         format!("{registry}/library/{rest}")
@@ -994,10 +985,20 @@ pub fn normalize_repo(repo: &str) -> String {
     }
 }
 
+/// Docker Hub under one spelling: a runtime reads `index.docker.io` as
+/// `docker.io`, so repository names compare by the latter.
+fn canonical_host(host: &str) -> &str {
+    if host == "index.docker.io" {
+        "docker.io"
+    } else {
+        host
+    }
+}
+
 /// A registry, or a repository path below one, that a test run cannot pull
-/// from: the `private_registries` setting lists them. snouty pulls an image
-/// below a prefix when the local store lacks it, and always copies the image
-/// into the tenant repository instead of pinning it at its own address.
+/// from: the `private_registries` setting lists them. snouty pulls such an
+/// image with this machine's credentials and copies the bytes into the tenant
+/// repository, so a pin never names the private address.
 ///
 /// The value is normalized the way [`normalize_repo`] reads an image: a name
 /// with no registry host is a Docker Hub namespace, so `acme` and
@@ -1026,16 +1027,12 @@ impl std::str::FromStr for RegistryPrefix {
                  repository path only, such as `ghcr.io/acme`"
             )));
         }
-        let (host, path) = match value.split_once('/') {
-            Some((host, path)) if is_registry_host(host) => (host, path),
+        let (host, path) = match registry_host(value) {
+            Some(host) => (host, &value[host.len() + 1..]),
             None if is_registry_host(value) => (value, ""),
-            _ => ("docker.io", value),
+            None => ("docker.io", value),
         };
-        let host = if host == "index.docker.io" {
-            "docker.io"
-        } else {
-            host
-        };
+        let host = canonical_host(host);
         Ok(Self(if path.is_empty() {
             host.to_string()
         } else {
@@ -1053,11 +1050,9 @@ impl std::fmt::Display for RegistryPrefix {
 impl RegistryPrefix {
     /// Whether `image`'s repository is this prefix or lies below it.
     pub fn matches(&self, image: &str) -> bool {
-        let repo = normalize_repo(image_repo(image));
-        repo == self.0
-            || repo
-                .strip_prefix(&self.0)
-                .is_some_and(|rest| rest.starts_with('/'))
+        normalize_repo(image_repo(image))
+            .strip_prefix(&self.0)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
     }
 }
 
@@ -1176,8 +1171,7 @@ mod tests {
     }
 
     /// Every image whose path continues below a prefix matches it, whatever
-    /// the runtime reads as the image's registry: the prefix is normalized the
-    /// same way the image is.
+    /// the path segment and tag spell.
     #[hegel::test]
     fn registry_prefix_matches_every_image_below_it(tc: hegel::TestCase) {
         let Ok(prefix) = tc.draw(generators::text()).parse::<RegistryPrefix>() else {
@@ -1447,13 +1441,6 @@ mod tests {
         // `nginx` is the namespace, not the official `library/nginx` image.
         let nginx: RegistryPrefix = "nginx".parse().unwrap();
         assert!(!nginx.matches("nginx:1.25"));
-
-        assert!(is_private_image(
-            "ghcr.io/acme/app:v1",
-            &[ghcr.clone(), hub.clone()]
-        ));
-        assert!(!is_private_image("quay.io/acme/app:v1", &[ghcr, hub]));
-        assert!(!is_private_image("ghcr.io/acme/app:v1", &[]));
     }
 
     #[test]

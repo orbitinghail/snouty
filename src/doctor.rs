@@ -465,16 +465,14 @@ fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
         Setting::new("update_channel", settings.update_channel().as_str()),
         Setting::maybe(
             "private_registries",
-            match settings.private_registries() {
-                [] => None,
-                prefixes => Some(
-                    prefixes
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                ),
-            },
+            (!settings.private_registries().is_empty()).then(|| {
+                let names: Vec<String> = settings
+                    .private_registries()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+                names.join(", ")
+            }),
         ),
     ];
     // Only when set: features are opt-in, so an empty row would be noise on

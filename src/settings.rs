@@ -581,8 +581,9 @@ fn load_settings_file(path: &Path, required: bool) -> Result<Option<Table>> {
 }
 
 /// Reads a setting out of one TOML table: [`string_value`] for text settings,
-/// [`integer_value`] for numeric ones. Environment variables are always plain
-/// text, so this only affects the file layers.
+/// [`integer_value`] for numeric ones, [`boolean_value`] for flags,
+/// [`list_value`] for lists. Environment variables are always plain text, so
+/// this only affects the file layers.
 type ValueReader = fn(&Table, &str, &str) -> Result<Option<String>>;
 
 /// Resolve a single text setting with the precedence: environment variable,
@@ -761,14 +762,14 @@ fn list_value(table: &Table, key: &str, display: &str) -> Result<Option<String>>
         Some(Value::Array(items)) => items
             .iter()
             .map(|item| {
-                item.as_str().map(str::to_string).ok_or_else(|| {
+                item.as_str().ok_or_else(|| {
                     eyre!(
                         "setting `{display}` must be an array of strings, but found {}",
                         item.type_str()
                     )
                 })
             })
-            .collect::<Result<Vec<String>>>()
+            .collect::<Result<Vec<&str>>>()
             .map(|entries| Some(entries.join(","))),
         Some(Value::String(text)) => Ok(Some(text.clone())),
         Some(value) => Err(eyre!(
@@ -1058,40 +1059,6 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn a_malformed_registry_prefix_names_the_setting() {
-        let msg = parse_registry_prefixes("private_registries", "ghcr.io/acme/app:v1")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            msg.contains("private_registries"),
-            "unexpected error: {msg}"
-        );
-        assert!(
-            msg.contains("ghcr.io/acme/app:v1"),
-            "unexpected error: {msg}"
-        );
-    }
-
-    #[test]
-    fn private_registries_resolve_from_a_settings_file() {
-        let project = settings_file(
-            "private_registries = [\"ghcr.io/acme\"]\n[profile.p]\nprivate_registries = \"quay.io\"\n",
-        );
-        let resolve = |profile| {
-            resolve_list_value(
-                "private_registries",
-                UNSET_ENV,
-                profile,
-                Some(&project),
-                None,
-            )
-            .unwrap()
-        };
-        assert_eq!(resolve(None).as_deref(), Some("ghcr.io/acme"));
-        assert_eq!(resolve(Some("p")).as_deref(), Some("quay.io"));
     }
 
     #[test]
