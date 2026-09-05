@@ -1,0 +1,59 @@
+# snouty launch --config — private registries
+#
+# A test run cannot pull from a registry that needs this machine's
+# credentials. The `private_registries` setting lists such registries, as
+# hosts or as repository paths below a host. snouty pulls an image below a
+# listed prefix when the local store lacks it, and copies it into the tenant
+# repository instead of pinning it at its own address, so every pin names
+# bytes the platform can pull.
+
+# Keep the harness registry address, because the cases below point
+# ANTITHESIS_REPOSITORY and SNOUTY_PRIVATE_REGISTRIES at paths inside it.
+set-env REGISTRY ${ANTITHESIS_REPOSITORY}
+
+# Seed the "private" registry: launch with it as the repository, so it holds
+# `<address>/private-src/app-private:v1`.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+set-env ANTITHESIS_REPOSITORY ${REGISTRY}/private-src
+build-image --platform linux/amd64 app-private:v1 images/myapp
+snouty launch -w basic_test -c seed_config --duration 30
+stderr 'Pushing image: .*/private-src/app-private:v1'
+
+# Drop the local copy at the private address, so only the registry serves it.
+remove-image ${REGISTRY}/private-src/app-private:v1
+
+# Without the setting, a missing image at another address fails before any
+# push. snouty does not pull it.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+set-env ANTITHESIS_REPOSITORY ${REGISTRY}/tenant
+substitute private_config/docker-compose.yaml
+! snouty launch -w basic_test -c private_config --duration 30
+stderr 'some images are not available locally'
+! stderr 'Pulling image:'
+! stderr 'Pushing image:'
+
+# With the setting, snouty pulls the image and copies it below the tenant
+# repository. The pin carries no address.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+set-env SNOUTY_PRIVATE_REGISTRIES ${REGISTRY}/private-src
+snouty launch -w basic_test -c private_config --duration 30
+stderr 'Pulling image: .*/private-src/app-private:v1'
+stderr 'Pushing image: .*/tenant/snouty-mirror/.*/private-src/app-private:v1'
+stderr '"antithesis.config_image": "snouty-config@sha256:'
+
+# The local store now holds the image, so a second launch pulls nothing.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+snouty launch -w basic_test -c private_config --duration 30
+! stderr 'Pulling image:'
+stderr '"antithesis.config_image": "snouty-config@sha256:'
+
+-- images/myapp/content --
+placeholder
+-- seed_config/docker-compose.yaml --
+services:
+  app:
+    image: app-private:v1
+-- private_config/docker-compose.yaml --
+services:
+  app:
+    image: ${REGISTRY}/private-src/app-private:v1

@@ -84,6 +84,35 @@ fn cmd_set_env(
     Ok(())
 }
 
+fn cmd_remove_image(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    // Usage: remove-image <name:tag>
+    // Removes one tag from the engine's local store. Interpolates ${VAR}
+    // references in the tag.
+    let [image_ref] = args else {
+        return Err(err("remove-image requires <name:tag>".to_string()));
+    };
+    let image_ref = env.substitute_env_vars(image_ref);
+    ENGINE_CTX.with_borrow(|ctx| {
+        let ctx = ctx
+            .as_ref()
+            .ok_or_else(|| err("ENGINE_CTX not set".to_string()))?;
+        let output = std::process::Command::new(ctx.engine.name())
+            .args(["rmi", &image_ref])
+            .output()
+            .map_err(|e| err(format!("remove-image: {e}")))?;
+        if !output.status.success() {
+            return Err(err(format!(
+                "remove-image {image_ref}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(())
+    })
+}
+
 fn cmd_substitute(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
@@ -702,6 +731,7 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
         .command("build-image", cmd_build_image)
         .command("set-env", cmd_set_env)
         .command("substitute", cmd_substitute)
+        .command("remove-image", cmd_remove_image)
         .execute();
 
     let built_images = ENGINE_CTX
@@ -832,6 +862,12 @@ engine_spec_case_test!(
     true
 );
 engine_spec_case_test!(
+    podman_engine_launch_config_private_specs,
+    "podman",
+    "launch_config_private.txt",
+    true
+);
+engine_spec_case_test!(
     podman_engine_validate_setup_specs,
     "podman",
     "validate_setup.txt",
@@ -871,6 +907,12 @@ engine_spec_case_test!(
     docker_engine_launch_config_mirror_specs,
     "docker",
     "launch_config_mirror.txt",
+    true
+);
+engine_spec_case_test!(
+    docker_engine_launch_config_private_specs,
+    "docker",
+    "launch_config_private.txt",
     true
 );
 engine_spec_case_test!(

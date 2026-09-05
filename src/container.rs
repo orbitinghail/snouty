@@ -22,6 +22,9 @@ use crate::settings::Settings;
 /// only exists to convert an indefinite hang into a clear error.
 pub const DISCOVERY_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The platform a test run executes.
+pub const AMD64_PLATFORM: &str = "linux/amd64";
+
 /// A container image's CPU architecture, as reported by the runtime.
 ///
 /// snouty only cares whether an image is runnable on Antithesis, which is
@@ -202,6 +205,12 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(())
     }
 
+    /// Pull `image_ref` for [`AMD64_PLATFORM`], with the runtime's own
+    /// credentials.
+    fn image_pull(&self, image_ref: &str) -> Result<()> {
+        pull_via_cli(self.name(), None, image_ref)
+    }
+
     /// Build a container image from a directory.
     ///
     /// When `dockerfile` is `Some`, the given path is passed via `-f`.
@@ -271,7 +280,7 @@ pub trait ContainerRuntime: Send + Sync {
     /// does not support arm64, and the host may well be an arm machine.
     fn build_and_push_config_image(&self, config_dir: &Path, image_ref: &str) -> Result<String> {
         eprintln!("Building config image: {}", image_ref);
-        self.build_image(config_dir, image_ref, None, Some("linux/amd64"))?;
+        self.build_image(config_dir, image_ref, None, Some(AMD64_PLATFORM))?;
 
         eprintln!("Pushing config image: {}", image_ref);
         // image_push pins to `name:tag@digest`, but Antithesis's config-image
@@ -506,15 +515,17 @@ impl ContainerRuntime for PodmanRuntime {
     }
 
     fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
-        remote_manifest_via_cli(&self.cmd, "--tls-verify=false", image_ref)
+        remote_manifest_via_cli(&self.cmd, PODMAN_INSECURE_FLAG, image_ref)
+    }
+
+    fn image_pull(&self, image_ref: &str) -> Result<()> {
+        pull_via_cli(&self.cmd, Some(PODMAN_INSECURE_FLAG), image_ref)
     }
 
     fn image_push(&self, image_ref: &str) -> Result<String> {
         let mut args = vec!["push"];
-
-        // Podman requires --tls-verify=false for plain HTTP registries.
-        if image_ref.starts_with("localhost") || image_ref.starts_with("127.0.0.1") {
-            args.push("--tls-verify=false");
+        if is_plain_http_registry(image_ref) {
+            args.push(PODMAN_INSECURE_FLAG);
         }
 
         let digestfile =
@@ -777,12 +788,20 @@ pub enum RemoteManifest {
     Single,
 }
 
+const PODMAN_INSECURE_FLAG: &str = "--tls-verify=false";
+
+/// Whether `image_ref` names a local registry. The test harness serves its
+/// registry over plain HTTP.
+fn is_plain_http_registry(image_ref: &str) -> bool {
+    image_ref.starts_with("localhost") || image_ref.starts_with("127.0.0.1")
+}
+
 /// Run `{runtime} manifest inspect` and classify the result. `insecure_flag`
 /// is the runtime's spelling for plain-HTTP registries (`--insecure` for
 /// docker, `--tls-verify=false` for podman), applied only to local registries.
 fn remote_manifest_via_cli(runtime: &str, insecure_flag: &str, image_ref: &str) -> RemoteManifest {
     let mut args = vec!["manifest", "inspect"];
-    if image_ref.starts_with("localhost") || image_ref.starts_with("127.0.0.1") {
+    if is_plain_http_registry(image_ref) {
         args.push(insecure_flag);
     }
     args.push(image_ref);
@@ -790,6 +809,30 @@ fn remote_manifest_via_cli(runtime: &str, insecure_flag: &str, image_ref: &str) 
         Ok(output) if output.status.success() => classify_manifest_json(&output.stdout),
         _ => RemoteManifest::NotFound,
     }
+}
+
+/// Run `{runtime} pull` for [`AMD64_PLATFORM`]. `insecure_flag` is the
+/// runtime's flag for a plain-HTTP registry, and it is applied only to a
+/// local registry. Docker has no such flag: the daemon configures insecure
+/// registries.
+fn pull_via_cli(runtime: &str, insecure_flag: Option<&str>, image_ref: &str) -> Result<()> {
+    let mut args = vec!["pull", "--platform", AMD64_PLATFORM];
+    if let Some(flag) = insecure_flag
+        && is_plain_http_registry(image_ref)
+    {
+        args.push(flag);
+    }
+    args.push(image_ref);
+    let output = Command::new(runtime)
+        .args(&args)
+        .output()
+        .wrap_err(format!("failed to run '{runtime} pull'"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("'{runtime} pull {image_ref}' failed"))
+            .with_section(move || stderr.trim().to_string().header("Stderr:"));
+    }
+    Ok(())
 }
 
 /// Classify `manifest inspect` JSON output: a `manifests` array marks a
@@ -930,22 +973,104 @@ pub fn strip_registry(image: &str, registry: &str) -> String {
 /// Repositories naming any other registry (first component with a dot, a
 /// port, or `localhost`) pass through unchanged.
 pub fn normalize_repo(repo: &str) -> String {
-    let (registry, rest) = match repo.split_once('/') {
-        Some((first, rest)) if is_registry_host(first) => {
-            let registry = if first == "index.docker.io" {
-                "docker.io"
-            } else {
-                first
-            };
-            (registry, rest)
-        }
-        _ => ("docker.io", repo),
+    let (registry, rest) = match registry_host(repo) {
+        Some(host) => (canonical_host(host), &repo[host.len() + 1..]),
+        None => ("docker.io", repo),
     };
     if registry == "docker.io" && !rest.contains('/') {
         format!("{registry}/library/{rest}")
     } else {
         format!("{registry}/{rest}")
     }
+}
+
+/// A runtime reads `index.docker.io` as `docker.io`, so repository names
+/// compare by `docker.io`.
+fn canonical_host(host: &str) -> &str {
+    if host == "index.docker.io" {
+        "docker.io"
+    } else {
+        host
+    }
+}
+
+/// A registry, or a repository path below one, that a test run cannot pull
+/// from. The `private_registries` setting lists them. snouty pulls such an
+/// image with this machine's credentials and copies the bytes into the tenant
+/// repository, so a pin never names the private address.
+///
+/// The value is normalized the way [`normalize_repo`] reads an image: a name
+/// with no registry host is a Docker Hub namespace, so `acme` and
+/// `docker.io/acme` name one prefix. No `library/` is inserted, because a
+/// prefix names a namespace, never one repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPrefix(String);
+
+impl std::str::FromStr for RegistryPrefix {
+    type Err = color_eyre::Report;
+
+    fn from_str(value: &str) -> Result<Self> {
+        let value = value
+            .trim()
+            .trim_end_matches(|c: char| c == '/' || c.is_whitespace());
+        if value.is_empty() {
+            return Err(user_error("a registry prefix must not be empty"));
+        }
+        if value.contains("://") {
+            return Err(user_error(format!(
+                "registry prefix `{value}` carries a URL scheme; write the host and path \
+                 only, such as `ghcr.io/acme`"
+            )));
+        }
+        let (host, path) = match registry_host(value) {
+            Some(host) => (host, &value[host.len() + 1..]),
+            // A bare `host:port` names a registry, but a bare `name:tag` names
+            // an image. The colon is a port only when digits follow it.
+            None if !value.contains('/')
+                && is_registry_host(value)
+                && !value.contains('@')
+                && value.rsplit_once(':').is_none_or(|(_, port)| {
+                    !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+                }) =>
+            {
+                (value, "")
+            }
+            None => ("docker.io", value),
+        };
+        if value.contains('@') || image_repo(path) != path {
+            return Err(user_error(format!(
+                "registry prefix `{value}` names a tag or digest; write the registry or \
+                 repository path only, such as `ghcr.io/acme`"
+            )));
+        }
+        let host = canonical_host(host);
+        Ok(Self(if path.is_empty() {
+            host.to_string()
+        } else {
+            format!("{host}/{path}")
+        }))
+    }
+}
+
+impl std::fmt::Display for RegistryPrefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl RegistryPrefix {
+    /// Whether `image`'s repository is this prefix or lies below it.
+    pub fn matches(&self, image: &str) -> bool {
+        normalize_repo(image_repo(image))
+            .strip_prefix(&self.0)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    }
+}
+
+pub fn is_private_image(image: &str, private_registries: &[RegistryPrefix]) -> bool {
+    private_registries
+        .iter()
+        .any(|prefix| prefix.matches(image))
 }
 
 /// All digests the local store records for `repo` among `repo_digests`
@@ -1040,6 +1165,29 @@ mod tests {
         let once = normalize_repo(&repo);
         let twice = normalize_repo(&once);
         assert_eq!(once, twice);
+    }
+
+    /// Arbitrary text also reaches every rejected spelling, which must not
+    /// panic.
+    #[hegel::test]
+    fn registry_prefix_parse_is_idempotent(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        let Ok(once) = text.parse::<RegistryPrefix>() else {
+            return;
+        };
+        let twice: RegistryPrefix = once.to_string().parse().expect("a prefix prints a prefix");
+        assert_eq!(once, twice);
+    }
+
+    #[hegel::test]
+    fn registry_prefix_matches_every_image_below_it(tc: hegel::TestCase) {
+        let Ok(prefix) = tc.draw(generators::text()).parse::<RegistryPrefix>() else {
+            return;
+        };
+        let segment = tc.draw(generators::text());
+        let tag = tc.draw(generators::text());
+        let image = format!("{prefix}/{segment}:{tag}");
+        assert!(prefix.matches(&image), "{prefix} does not match {image}");
     }
 
     /// A copy always hides the address it came from — that is the whole
@@ -1248,6 +1396,66 @@ mod tests {
         // Nothing to read is not podman, and invalid UTF-8 must not panic.
         assert!(!version_output_is_podman(b""));
         assert!(!version_output_is_podman(&[0xff, 0xfe, 0xfd]));
+    }
+
+    #[test]
+    fn registry_prefix_normalizes_like_an_image_reference() {
+        let parse = |text: &str| text.parse::<RegistryPrefix>().unwrap().to_string();
+        assert_eq!(parse("ghcr.io"), "ghcr.io");
+        assert_eq!(parse("ghcr.io/acme/"), "ghcr.io/acme");
+        assert_eq!(parse(" localhost:5000/team "), "localhost:5000/team");
+        assert_eq!(parse("localhost:5000"), "localhost:5000");
+        assert_eq!(
+            parse("registry.corp.example:8443"),
+            "registry.corp.example:8443"
+        );
+        assert_eq!(parse("ghcr.io / "), "ghcr.io");
+        // A dot or colon after the slash marks no host.
+        assert_eq!(parse("acme/my.app"), "docker.io/acme/my.app");
+        assert_eq!(parse("acme"), "docker.io/acme");
+        assert_eq!(parse("docker.io/acme"), "docker.io/acme");
+        assert_eq!(parse("index.docker.io/acme"), "docker.io/acme");
+        assert_eq!(parse("index.docker.io"), "docker.io");
+    }
+
+    #[test]
+    fn registry_prefix_rejects_a_scheme_a_tag_and_a_digest() {
+        for (text, needle) in [
+            ("", "must not be empty"),
+            ("  ", "must not be empty"),
+            ("https://ghcr.io/acme", "URL scheme"),
+            ("ghcr.io/acme/app:v1", "tag or digest"),
+            ("ghcr.io/acme/app@sha256:abc", "tag or digest"),
+            ("ghcr.io@sha256", "tag or digest"),
+            ("app:v1", "tag or digest"),
+            ("acme/app:8080", "tag or digest"),
+            ("ghcr.io:latest", "tag or digest"),
+        ] {
+            let err = text.parse::<RegistryPrefix>().unwrap_err().to_string();
+            assert!(err.contains(needle), "`{text}`: {err}");
+        }
+    }
+
+    #[test]
+    fn registry_prefix_matches_the_namespace_and_nothing_beside_it() {
+        let acme: RegistryPrefix = "ghcr.io/acme".parse().unwrap();
+        assert!(acme.matches("ghcr.io/acme/app:v1"));
+        assert!(acme.matches("ghcr.io/acme/team/app@sha256:abc"));
+        assert!(acme.matches("ghcr.io/acme"));
+        assert!(!acme.matches("ghcr.io/acmeco/app:v1"));
+        assert!(!acme.matches("docker.io/acme/app:v1"));
+
+        let ghcr: RegistryPrefix = "ghcr.io".parse().unwrap();
+        assert!(ghcr.matches("ghcr.io/anyone/app:v1"));
+        assert!(!ghcr.matches("quay.io/anyone/app:v1"));
+        assert!(!ghcr.matches("app:v1"));
+
+        let hub: RegistryPrefix = "acme".parse().unwrap();
+        assert!(hub.matches("acme/app:v1"));
+        assert!(hub.matches("index.docker.io/acme/app:v1"));
+        // `nginx` is the namespace, not the official `library/nginx` image.
+        let nginx: RegistryPrefix = "nginx".parse().unwrap();
+        assert!(!nginx.matches("nginx:1.25"));
     }
 
     #[test]

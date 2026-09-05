@@ -263,16 +263,18 @@ async fn cmd_launch(
         container::warn_ambiguous_engine(settings, rt.as_ref(), json);
 
         // For compose configs, every service image is pinned to its local
-        // digest (snouty never pulls): served from a registry confirmed to
-        // already have it, or pushed to the Antithesis registry. The compose
-        // file is then canonicalized, digest-pinned, and baked into the
+        // digest (snouty pulls only a missing image below a `private_registries`
+        // prefix): served from a registry confirmed to already have it, or
+        // pushed to the Antithesis registry. The compose file is then
+        // canonicalized, digest-pinned, and baked into the
         // config image, so the platform runs exactly what was resolved here.
         // k8s configs reference images by name in the manifests and the
         // platform pulls them itself.
         let pinned_config = match &detected {
             config::Config::Compose(compose_config) => {
                 let compose = compose::DockerCompose::resolve(rt.as_ref(), compose_config.clone())?;
-                let pinned_yaml = compose.pin_images(rt.as_ref(), &registry)?;
+                let pinned_yaml =
+                    compose.pin_images(rt.as_ref(), &registry, settings.private_registries())?;
                 let staged = compose::stage_pinned_config(compose_config.dir(), &pinned_yaml)?;
                 rt.build_and_push_config_image(staged.path(), &config_image)?
             }

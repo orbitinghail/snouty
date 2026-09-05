@@ -9,6 +9,7 @@ use tempfile::NamedTempFile;
 use toml::{Table, Value};
 
 use crate::cli::UpdateChannel;
+use crate::container::RegistryPrefix;
 use crate::env;
 use crate::error::user_error;
 
@@ -22,6 +23,7 @@ pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
 pub const UPDATE_CHANNEL_VAR_NAME: &str = "SNOUTY_UPDATE_CHANNEL";
 pub const API_CACHE_MAX_FILE_SIZE_VAR_NAME: &str = "SNOUTY_API_CACHE_MAX_FILE_SIZE";
 pub const API_CACHE_RESPECT_HEADERS_VAR_NAME: &str = "SNOUTY_API_CACHE_RESPECT_HEADERS";
+pub const PRIVATE_REGISTRIES_VAR_NAME: &str = "SNOUTY_PRIVATE_REGISTRIES";
 const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
@@ -93,6 +95,7 @@ pub struct Settings {
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
     api_cache_respect_headers: bool,
+    private_registries: Vec<RegistryPrefix>,
 }
 
 impl Default for Settings {
@@ -198,6 +201,17 @@ impl Settings {
         .map(|value| parse_boolean("api_cache_respect_headers", &value))
         .transpose()?;
 
+        // A typed list: the registries a test run cannot pull from.
+        let private_registries = resolve_list_value(
+            "private_registries",
+            PRIVATE_REGISTRIES_VAR_NAME,
+            profile.as_deref(),
+            project.as_ref(),
+            global.as_ref(),
+        )?
+        .map(|value| parse_registry_prefixes("private_registries", &value))
+        .transpose()?;
+
         // A derived base URL interpolates the tenant into the request host
         // (`https://{tenant}.antithesis.com`) and we attach the API key to that
         // host, so a malformed tenant would silently send credentials to an
@@ -221,6 +235,7 @@ impl Settings {
             update_channel,
             api_cache_max_file_size,
             api_cache_respect_headers,
+            private_registries,
         }
         .build())
     }
@@ -271,6 +286,12 @@ impl Settings {
         self.api_cache_respect_headers
     }
 
+    /// The registries a test run cannot pull from; empty when unset. Already
+    /// validated — an invalid setting value fails in [`Settings::resolve`].
+    pub fn private_registries(&self) -> &[RegistryPrefix] {
+        &self.private_registries
+    }
+
     pub(crate) fn profile(&self) -> Option<&str> {
         self.profile.as_deref()
     }
@@ -307,6 +328,7 @@ pub struct SettingsBuilder {
     update_channel: UpdateChannel,
     api_cache_max_file_size: Option<u64>,
     api_cache_respect_headers: Option<bool>,
+    private_registries: Option<Vec<RegistryPrefix>>,
 }
 
 impl SettingsBuilder {
@@ -355,6 +377,11 @@ impl SettingsBuilder {
         self
     }
 
+    pub fn private_registries(mut self, value: Vec<RegistryPrefix>) -> Self {
+        self.private_registries = Some(value);
+        self
+    }
+
     /// Finish the build, applying the derived values: `base_url` falls back to
     /// a tenant-derived host, and the cache size cap falls back to its default.
     /// [`Settings::resolve`] and the test constructors both finish here, so the
@@ -378,6 +405,7 @@ impl SettingsBuilder {
                 .api_cache_max_file_size
                 .unwrap_or(crate::api_cache::DEFAULT_MAX_FILE_SIZE),
             api_cache_respect_headers: self.api_cache_respect_headers.unwrap_or(true),
+            private_registries: self.private_registries.unwrap_or_default(),
         }
     }
 }
@@ -551,8 +579,9 @@ fn load_settings_file(path: &Path, required: bool) -> Result<Option<Table>> {
 }
 
 /// Reads a setting out of one TOML table: [`string_value`] for text settings,
-/// [`integer_value`] for numeric ones. Environment variables are always plain
-/// text, so this only affects the file layers.
+/// [`integer_value`] for numeric ones, [`boolean_value`] for flags,
+/// [`list_value`] for lists. Environment variables are always plain text, so
+/// this only affects the file layers.
 type ValueReader = fn(&Table, &str, &str) -> Result<Option<String>>;
 
 /// Resolve a single text setting with the precedence: environment variable,
@@ -600,6 +629,20 @@ fn resolve_boolean_value(
     global: Option<&Table>,
 ) -> Result<Option<String>> {
     resolve_value_with(boolean_value, key, env_var, profile, project, global)
+}
+
+/// [`resolve_value`] for a list setting: the file layers accept a TOML array
+/// of strings as well as a quoted string. The value comes back as one
+/// comma-separated text, the form an environment variable takes. The caller
+/// splits and parses it (see [`parse_registry_prefixes`]).
+fn resolve_list_value(
+    key: &str,
+    env_var: &str,
+    profile: Option<&str>,
+    project: Option<&Table>,
+    global: Option<&Table>,
+) -> Result<Option<String>> {
+    resolve_value_with(list_value, key, env_var, profile, project, global)
 }
 
 fn resolve_value_with(
@@ -705,6 +748,48 @@ fn boolean_value(table: &Table, key: &str, display: &str) -> Result<Option<Strin
             value.type_str()
         )),
     }
+}
+
+/// Read `key` from `table` as a list-like setting (a TOML array of strings or
+/// a quoted string), naming the offending value `display` in the error. The
+/// value comes back as comma-separated text; the caller splits and parses it
+/// (see [`resolve_list_value`]).
+fn list_value(table: &Table, key: &str, display: &str) -> Result<Option<String>> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str().ok_or_else(|| {
+                    eyre!(
+                        "setting `{display}` must be an array of strings, but found {}",
+                        item.type_str()
+                    )
+                })
+            })
+            .collect::<Result<Vec<&str>>>()
+            .map(|entries| Some(entries.join(","))),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(value) => Err(eyre!(
+            "setting `{display}` must be an array of strings or a string, but found {}",
+            value.type_str()
+        )),
+    }
+}
+
+/// Parse a comma-separated list of registry prefixes, naming `setting` in the
+/// error. An empty entry between two commas is skipped.
+fn parse_registry_prefixes(setting: &str, value: &str) -> Result<Vec<RegistryPrefix>> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            entry
+                .parse::<RegistryPrefix>()
+                .map_err(|err| user_error(format!("invalid {setting} setting: {err}")))
+        })
+        .collect()
 }
 
 /// Parse a boolean setting — exactly `true` or `false` — naming `setting` in
@@ -918,6 +1003,60 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("must be a boolean"), "unexpected error: {msg}");
         assert!(msg.contains("integer"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn list_value_accepts_an_array_of_strings_or_a_quoted_string() {
+        let table: Table = "private_registries = [\"ghcr.io/acme\", \"quay.io\"]\n"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            list_value(&table, "private_registries", "x")
+                .unwrap()
+                .as_deref(),
+            Some("ghcr.io/acme,quay.io")
+        );
+        let table: Table = "private_registries = \"ghcr.io/acme, quay.io\"\n"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            list_value(&table, "private_registries", "x")
+                .unwrap()
+                .as_deref(),
+            Some("ghcr.io/acme, quay.io")
+        );
+        assert_eq!(list_value(&table, "missing", "x").unwrap(), None);
+    }
+
+    #[test]
+    fn non_string_list_value_is_an_error() {
+        for contents in [
+            "private_registries = [\"ghcr.io\", 1]\n",
+            "private_registries = true\n",
+        ] {
+            let table: Table = contents.parse().unwrap();
+            let msg = list_value(&table, "private_registries", "private_registries")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                msg.contains("private_registries"),
+                "unexpected error: {msg}"
+            );
+            assert!(msg.contains("array of strings"), "unexpected error: {msg}");
+        }
+    }
+
+    #[test]
+    fn registry_prefixes_split_on_commas_and_skip_empty_entries() {
+        let prefixes =
+            parse_registry_prefixes("private_registries", " ghcr.io/acme ,, quay.io,").unwrap();
+        let spelled: Vec<String> = prefixes.iter().map(ToString::to_string).collect();
+        assert_eq!(spelled, ["ghcr.io/acme", "quay.io"]);
+        assert!(
+            parse_registry_prefixes("private_registries", "")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

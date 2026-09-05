@@ -2313,7 +2313,7 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
             "validate-missing-image",
             "Validate when a service image is missing locally",
             "A service references an image I haven't built or pulled.",
-            "The error lists the missing image and reminds me snouty never pulls.",
+            "The error lists the missing image and reminds me snouty does not pull on its own.",
             [str(s / "missing-image")],
             fails_with("some images are not available locally"),
             needs_docker=True,

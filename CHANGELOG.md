@@ -1,6 +1,6 @@
 # Unreleased
 
-Nothing Yet!
+- Add the `private_registries` setting (`SNOUTY_PRIVATE_REGISTRIES`): registries a test run cannot pull from. `snouty launch --config` pulls a compose service image below a listed prefix when the local image store lacks it, and always copies the image into your repository ([#298](https://github.com/antithesishq/snouty/issues/298))
 
 # Version 0.7.1 (2026-09-01)
 

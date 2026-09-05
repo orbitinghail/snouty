@@ -61,7 +61,7 @@ snouty validate tests/fixtures/validate/timeout --timeout 5
 
 `validate` runs a config locally; `launch` submits it to Antithesis. `--config`
 points at the directory, which snouty builds and pushes as the config image —
-the compose service images must already exist locally (snouty never pulls).
+the compose service images must already exist locally (snouty pulls only an image below a `private_registries` prefix).
 Set your tenant, repository, and credentials first (see `snouty launch --help`).
 
 ```sh

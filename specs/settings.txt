@@ -23,9 +23,11 @@ stderr 'repository.*acme/repo'
 stderr 'profile.*staging'
 stderr 'tenant.*staging-tenant'
 
-# 3. An explicit --settings file is read instead of ./.snouty.toml.
+# 3. An explicit --settings file is read instead of ./.snouty.toml. A list
+#    setting is a TOML array there, and the table joins the entries.
 ! snouty --settings other.toml doctor
 stderr 'tenant.*other-tenant'
+stderr 'private_registries.*ghcr.io/acme, quay.io'
 
 # 4. The --profile flag wins over ANTITHESIS_PROFILE.
 env ANTITHESIS_PROFILE=staging
@@ -61,6 +63,22 @@ stderr 'repository.*env-path-repo'
 ! snouty --settings other.toml doctor
 stderr 'repository.*other/repo'
 
+# 10. The private registries are "not set" until configured. The environment
+#     variable separates the entries with commas; each entry is normalized the
+#     way a runtime reads an image reference (a bare name is a Docker Hub
+#     namespace).
+! snouty doctor
+stderr 'private_registries.*not set'
+env SNOUTY_PRIVATE_REGISTRIES=ghcr.io/acme/,acme
+! snouty doctor
+stderr 'private_registries.*ghcr.io/acme, docker.io/acme'
+
+# 11. An entry that names a tag or a digest is rejected at startup, and the
+#     error names the setting.
+env SNOUTY_PRIVATE_REGISTRIES=ghcr.io/acme/app:v1
+! snouty doctor
+stderr 'invalid private_registries setting.*ghcr.io/acme/app:v1.*tag or digest'
+
 -- .snouty.toml --
 tenant = "acme"
 repository = "acme/repo"
@@ -73,5 +91,6 @@ tenant = "prod-tenant"
 -- other.toml --
 tenant = "other-tenant"
 repository = "other/repo"
+private_registries = ["ghcr.io/acme", "quay.io"]
 -- env-settings.toml --
 repository = "env-path-repo"
