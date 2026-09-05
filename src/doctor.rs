@@ -463,6 +463,19 @@ fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
             settings.container_engine().unwrap_or("auto-detect"),
         ),
         Setting::new("update_channel", settings.update_channel().as_str()),
+        Setting::maybe(
+            "private_registries",
+            match settings.private_registries() {
+                [] => None,
+                prefixes => Some(
+                    prefixes
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+            },
+        ),
     ];
     // Only when set: features are opt-in, so an empty row would be noise on
     // every ordinary run.
@@ -984,6 +997,24 @@ mod tests {
             .expect("the row appears when a feature is on");
         // An id this build doesn't know is echoed, not dropped.
         assert_eq!(row.render_value(), "runs-exec, other");
+    }
+
+    #[test]
+    fn private_registries_row_lists_every_prefix() {
+        let rows = resolve_settings(&Settings::default(), &[]);
+        assert_eq!(row(&rows, "private_registries").render_value(), "not set");
+
+        let settings = Settings::builder()
+            .private_registries(vec![
+                "ghcr.io/acme".parse().unwrap(),
+                "quay.io".parse().unwrap(),
+            ])
+            .build();
+        let rows = resolve_settings(&settings, &[]);
+        assert_eq!(
+            row(&rows, "private_registries").render_value(),
+            "ghcr.io/acme, quay.io"
+        );
     }
 
     #[test]

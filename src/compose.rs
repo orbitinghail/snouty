@@ -15,9 +15,9 @@ use color_eyre::{
 
 use crate::config::ComposeConfig;
 use crate::container::{
-    Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
-    digests_for_repo, image_ref_tag, image_repo, is_podman_in_disguise, mirror_path,
-    normalize_repo, registry_host, strip_registry,
+    Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RegistryPrefix, RemoteManifest,
+    available_engines, digests_for_repo, image_ref_tag, image_repo, is_podman_in_disguise,
+    is_private_image, mirror_path, normalize_repo, registry_host, strip_registry,
 };
 use crate::error::user_error;
 use crate::process::{ProcessGroupChild, output_with_timeout};
@@ -497,9 +497,11 @@ impl DockerCompose {
     /// with those pins (`name:tag@sha256:...`).
     ///
     /// The local image store is the single source of truth for what a launch
-    /// runs — snouty never pulls. Every service must resolve to an image that
-    /// is present locally (built via its `build:` stanza, built or loaded out
-    /// of band, or previously pulled). Each image is then pinned to its local
+    /// runs. Every service must resolve to an image that is present locally
+    /// (built via its `build:` stanza, built or loaded out of band, or
+    /// previously pulled); the one exception is an image below a prefix in
+    /// `private_registries`, which snouty pulls when the store lacks it
+    /// ([`pull_private_images`]). Each image is then pinned to its local
     /// digest in a registry confirmed to serve it ([`find_remote_pin`]),
     /// or — when no registry has it — tagged into `registry` and pushed, so
     /// the platform always pulls exactly what was resolved here.
@@ -507,8 +509,14 @@ impl DockerCompose {
     /// A pin into `registry` itself comes back bare (`name:tag@sha256:...`),
     /// because the platform resolves such a name against the tenant's own
     /// repository. A pin into any other registry stays fully qualified.
-    pub fn pin_images(&self, rt: &dyn ContainerRuntime, registry: &str) -> Result<String> {
+    pub fn pin_images(
+        &self,
+        rt: &dyn ContainerRuntime,
+        registry: &str,
+        private_registries: &[RegistryPrefix],
+    ) -> Result<String> {
         let contents = self.contents(None)?;
+        pull_private_images(rt, &contents, private_registries)?;
         with_config_image_escape_hatch(validate_images_are_available(rt, &contents))?;
 
         let prefix = format!("{}/", registry.trim_end_matches('/'));
@@ -522,7 +530,7 @@ impl DockerCompose {
         for service in &contents.services {
             let image = service.image.as_str();
             if !resolution.contains_key(image) {
-                let pin = find_remote_pin(rt, image, &prefix)?;
+                let pin = find_remote_pin(rt, image, &prefix, private_registries)?;
                 match &pin {
                     // A remote pin is never tagged onto a destination, so it
                     // claims none.
@@ -606,6 +614,32 @@ fn push_destination(image: &str, prefix: &str) -> Result<String> {
     ))
 }
 
+/// Pull each service image that lies below a prefix in `private_registries`
+/// and is absent from the local store. An image already present is never
+/// pulled again, so the local store stays the source of truth for what runs.
+///
+/// Depends only on the container engine, not on compose state, so it is a
+/// free function rather than a [`DockerCompose`] method.
+fn pull_private_images(
+    rt: &dyn ContainerRuntime,
+    contents: &ComposeContents,
+    private_registries: &[RegistryPrefix],
+) -> Result<()> {
+    let mut seen = HashSet::new();
+    for service in &contents.services {
+        let image = service.image.as_str();
+        if !seen.insert(image)
+            || !is_private_image(image, private_registries)
+            || rt.image_exists(image)?
+        {
+            continue;
+        }
+        eprintln!("Pulling image: {image}");
+        rt.image_pull(image)?;
+    }
+    Ok(())
+}
+
 /// Find a registry that already serves `image`'s local bytes, returning
 /// the digest-pinned reference to use, or `None` when the image must be
 /// pushed.
@@ -621,7 +655,12 @@ fn push_destination(image: &str, prefix: &str) -> Result<String> {
 ///
 /// Depends only on the container engine, not on compose state, so it is a
 /// free function rather than a [`DockerCompose`] method.
-fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Result<Option<String>> {
+fn find_remote_pin(
+    rt: &dyn ContainerRuntime,
+    image: &str,
+    prefix: &str,
+    private_registries: &[RegistryPrefix],
+) -> Result<Option<String>> {
     let repo_digests = rt.image_repo_digests(image)?;
     let tag = image_ref_tag(image);
 
@@ -630,9 +669,13 @@ fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Resu
     // is spelled so that it survives the strip. A repository at the
     // registry's own address never survives it either, because the strip
     // matches `prefix` whole — and that address is the one a test run cannot
-    // resolve, so those bytes go to the push path.
+    // resolve, so those bytes go to the push path. So does a private
+    // registry's: this machine's credentials confirm the manifest, but a test
+    // run has none.
     let registry_address = registry_host(prefix);
-    if registry_address.is_none() || registry_host(image) != registry_address {
+    if (registry_address.is_none() || registry_host(image) != registry_address)
+        && !is_private_image(image, private_registries)
+    {
         repos.push(normalize_repo(image_repo(image)));
     }
     let dest_repo = normalize_repo(image_repo(&push_destination(image, prefix)?));
@@ -1457,6 +1500,15 @@ services:
     /// Run pin_images over `yaml` with a [`FakeRuntime`] (real docker-compose
     /// binary for config resolution, fake image/registry operations).
     fn pin_with_fake(rt: &FakeRuntime, yaml: &str, registry: &str) -> Result<String> {
+        pin_with_fake_private(rt, yaml, registry, &[])
+    }
+    /// [`pin_with_fake`] with `private_registries` set.
+    fn pin_with_fake_private(
+        rt: &FakeRuntime,
+        yaml: &str,
+        registry: &str,
+        private_registries: &[RegistryPrefix],
+    ) -> Result<String> {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("docker-compose.yaml"), yaml).unwrap();
         let config = match crate::config::detect_config(dir.path()).unwrap() {
@@ -1464,7 +1516,7 @@ services:
             other => panic!("expected Compose, got {other:?}"),
         };
         let compose = DockerCompose::resolve(rt, config).unwrap();
-        compose.pin_images(rt, registry)
+        compose.pin_images(rt, registry, private_registries)
     }
     #[test]
     fn pin_images_skips_push_when_registry_serves_digest() {
@@ -1503,6 +1555,135 @@ services:
         assert!(
             out.contains("docker.io/library/redis:7@sha256:list"),
             "expected the verified list digest pin, got: {out}"
+        );
+        assert!(
+            rt.pushed.lock().unwrap().is_empty(),
+            "nothing should be pushed"
+        );
+    }
+    #[test]
+    fn pin_images_pulls_a_missing_private_image_and_copies_it() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // The store lacks the image, and the platform cannot pull from the
+        // private registry: snouty pulls it here and copies it below the
+        // mirror path, so the pin names bytes the tenant repository serves.
+        let dest = "reg.example.com/snouty-mirror/ghcr.io/acme/app:v1";
+        let rt = FakeRuntime {
+            architectures: BTreeMap::from([(dest.to_string(), "amd64".to_string())]),
+            ..Default::default()
+        };
+        let private: Vec<RegistryPrefix> = vec!["ghcr.io/acme".parse().unwrap()];
+        let out = pin_with_fake_private(
+            &rt,
+            "services:\n  app:\n    image: ghcr.io/acme/app:v1\n",
+            "reg.example.com",
+            &private,
+        )
+        .unwrap();
+        assert_eq!(*rt.pulled.lock().unwrap(), vec!["ghcr.io/acme/app:v1"]);
+        assert_eq!(*rt.pushed.lock().unwrap(), vec![dest]);
+        assert!(
+            out.contains("image: snouty-mirror/ghcr.io/acme/app:v1@sha256:fakepushdigest"),
+            "expected the mirrored pin, got: {out}"
+        );
+    }
+    #[test]
+    fn pin_images_never_pulls_a_private_image_the_store_holds() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // Two services share the image: it is present, so no pull happens,
+        // and the copy is pushed once.
+        let dest = "reg.example.com/snouty-mirror/ghcr.io/acme/app:v1";
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([("ghcr.io/acme/app:v1".to_string(), true)]),
+            architectures: BTreeMap::from([(dest.to_string(), "amd64".to_string())]),
+            ..Default::default()
+        };
+        let private: Vec<RegistryPrefix> = vec!["ghcr.io".parse().unwrap()];
+        pin_with_fake_private(
+            &rt,
+            "services:\n  app:\n    image: ghcr.io/acme/app:v1\n  \
+             worker:\n    image: ghcr.io/acme/app:v1\n",
+            "reg.example.com",
+            &private,
+        )
+        .unwrap();
+        assert!(
+            rt.pulled.lock().unwrap().is_empty(),
+            "nothing should be pulled"
+        );
+        assert_eq!(*rt.pushed.lock().unwrap(), vec![dest]);
+    }
+    #[test]
+    fn pin_images_copies_a_private_image_even_when_its_registry_serves_it() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // The registry confirms the digest with this machine's credentials,
+        // which a test run does not have. Outside the private list the pin
+        // names the registry; inside it, the image is copied.
+        let dest = "reg.example.com/snouty-mirror/ghcr.io/acme/app:v1";
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([("ghcr.io/acme/app:v1".to_string(), true)]),
+            architectures: BTreeMap::from([(dest.to_string(), "amd64".to_string())]),
+            repo_digests: BTreeMap::from([(
+                "ghcr.io/acme/app:v1".to_string(),
+                vec!["ghcr.io/acme/app@sha256:list".to_string()],
+            )]),
+            remote_manifests: BTreeMap::from([(
+                "ghcr.io/acme/app@sha256:list".to_string(),
+                RemoteManifest::List { has_amd64: true },
+            )]),
+            ..Default::default()
+        };
+        let yaml = "services:\n  app:\n    image: ghcr.io/acme/app:v1\n";
+
+        let out = pin_with_fake(&rt, yaml, "reg.example.com").unwrap();
+        assert!(
+            out.contains("image: ghcr.io/acme/app:v1@sha256:list"),
+            "expected the registry pin, got: {out}"
+        );
+        assert!(
+            rt.pushed.lock().unwrap().is_empty(),
+            "nothing should be pushed"
+        );
+
+        let private: Vec<RegistryPrefix> = vec!["ghcr.io/acme".parse().unwrap()];
+        let out = pin_with_fake_private(&rt, yaml, "reg.example.com", &private).unwrap();
+        assert!(
+            out.contains("image: snouty-mirror/ghcr.io/acme/app:v1@sha256:fakepushdigest"),
+            "expected the mirrored pin, got: {out}"
+        );
+        assert_eq!(*rt.pushed.lock().unwrap(), vec![dest]);
+    }
+    #[test]
+    fn pin_images_never_pulls_an_image_outside_the_private_registries() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        let rt = FakeRuntime::default();
+        let private: Vec<RegistryPrefix> = vec!["ghcr.io/acme".parse().unwrap()];
+        let err = pin_with_fake_private(
+            &rt,
+            "services:\n  app:\n    image: ghcr.io/other/app:v1\n",
+            "reg.example.com",
+            &private,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:?}").contains("some images are not available locally"),
+            "unexpected error: {err:?}"
+        );
+        assert!(
+            rt.pulled.lock().unwrap().is_empty(),
+            "nothing should be pulled"
         );
         assert!(
             rt.pushed.lock().unwrap().is_empty(),
@@ -1937,7 +2118,7 @@ services:
                 };
                 let compose = DockerCompose::resolve(rt.as_ref(), config)
                     .unwrap_or_else(|e| panic!("{}: DockerCompose::resolve: {e:?}", rt.name()));
-                let out = compose.pin_images(rt.as_ref(), &addr)?;
+                let out = compose.pin_images(rt.as_ref(), &addr, &[])?;
                 Ok(serde_yaml::from_str::<serde_yaml::Value>(&out)
                     .unwrap()
                     .get("services")
@@ -2019,6 +2200,7 @@ services:
         repo_digests: BTreeMap<String, Vec<String>>,
         remote_manifests: BTreeMap<String, RemoteManifest>,
         pushed: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        pulled: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
     impl ContainerRuntime for FakeRuntime {
         fn name(&self) -> &str {
@@ -2039,7 +2221,13 @@ services:
         }
 
         fn image_exists(&self, image_ref: &str) -> Result<bool> {
-            Ok(*self.available_images.get(image_ref).unwrap_or(&false))
+            Ok(*self.available_images.get(image_ref).unwrap_or(&false)
+                || self.pulled.lock().unwrap().iter().any(|i| i == image_ref))
+        }
+
+        fn image_pull(&self, image_ref: &str) -> Result<()> {
+            self.pulled.lock().unwrap().push(image_ref.to_string());
+            Ok(())
         }
 
         fn image_architecture(&self, image_ref: &str) -> Result<Architecture> {
